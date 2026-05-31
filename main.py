@@ -817,26 +817,49 @@ def main():
         fps = fps_counter.tick()
         frame = draw_side_panel(frame, hands_info, fps, panel_extra)
 
-        # ── 轨迹预览 ──
+        # ── 轨迹预览（带醒目识别结果标签） ──
         preview = traj_result.get("preview") if traj_result else None
         if preview:
             pv = preview.copy()
             pv_w, pv_h = pv.size
-            max_display = 280
+            max_display = 220
             scale = max_display / max(pv_w, pv_h)
             new_w, new_h = int(pv_w * scale), int(pv_h * scale)
             pv = pv.resize((new_w, new_h), Image.LANCZOS)
             bx, by = 10, h - new_h - 50
             bw, bh = new_w + 6, new_h + 6
+
+            # 识别结果标签（大号，黄底黑字）
+            src = traj_result.get('source', '?')
+            display = traj_result['display']
+            label = f"{src}: {display}"
+            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_DUPLEX, 1.2, 3)
+            label_bx = bx
+            label_by = by - th - 14
+            label_bw = tw + 20
+            label_bh = th + 12
+            # 黄色背景条
+            cv2.rectangle(frame,
+                          (label_bx, label_by),
+                          (label_bx + label_bw, label_by + label_bh),
+                          (50, 210, 255), -1)
+            cv2.rectangle(frame,
+                          (label_bx, label_by),
+                          (label_bx + label_bw, label_by + label_bh),
+                          (0, 0, 0), 2)
+            # 黑色大字
+            cv2.putText(frame, label,
+                        (label_bx + 10, label_by + th + 6),
+                        cv2.FONT_HERSHEY_DUPLEX, 1.2, (0, 0, 0), 3)
+
+            # 预览图外框
             cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), (80, 80, 80), -1)
             cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), (160, 160, 160), 1)
-            cv2.rectangle(frame, (bx + 3, by + 3), (bx + 3 + new_w, by + 3 + new_h), (255, 255, 255), -1)
+            cv2.rectangle(frame, (bx + 3, by + 3),
+                          (bx + 3 + new_w, by + 3 + new_h), (255, 255, 255), -1)
             pv_np = np.array(pv)
             pv_bgr = cv2.cvtColor(pv_np, cv2.COLOR_GRAY2BGR)
             frame[by + 3:by + 3 + new_h, bx + 3:bx + 3 + new_w] = pv_bgr
-            label = f"{traj_result.get('source', '')}: {traj_result['display']}"
-            cv2.putText(frame, label, (bx, by - 6),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
 
         cv2.imshow(window, frame)
 
