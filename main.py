@@ -4,6 +4,11 @@ GestureInteractionSystem - 主程序入口
 基于 MediaPipe Task API + OpenCV 的实时手势识别系统
 支持 6 种静态手势识别，并映射到对应的操作。
 
+双手模式（v2）：
+  - 左手（蓝色骨架）→ 控制：OK切换、拳头暂停、手掌清空、点赞提交
+  - 右手（绿色骨架）→ 书写：食指指尖在空中写字
+  - 仅单手可见 → 自动回退原版单手握拳+书写混合模式
+
 按 ESC 退出，按 S 截图，按 F 全屏。
 """
 
@@ -31,12 +36,10 @@ from trajectory_recognizer import TrajectoryRecognizer
 # ══════════════════════════════════════════════════════════
 CAMERA_ID = 0
 
-# 模型文件路径（与 main.py 同目录）
 _MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(_MODULE_DIR, "hand_landmarker.task")
 
-# CNN 预测模型路径（项目内置，需在当前环境安装 torch）
-CNN_PYTHON = sys.executable  # 当前 Python 解释器
+CNN_PYTHON = sys.executable
 CNN_SCRIPT = os.path.join(_MODULE_DIR, "cnn", "predict_api.py")
 
 # ══════════════════════════════════════════════════════════
@@ -58,12 +61,12 @@ def _load_font(size: int) -> ImageFont.FreeTypeFont:
     return ImageFont.load_default()
 
 
-_FONT_LARGE = None   # 34px
-_FONT_MID = None     # 24px
-_FONT_SMALL = None   # 22px
-_FONT_XS = None      # 17px
-_FONT_XXS = None     # 15px
-_FONT_MINI = None    # 14px
+_FONT_LARGE = None
+_FONT_MID = None
+_FONT_SMALL = None
+_FONT_XS = None
+_FONT_XXS = None
+_FONT_MINI = None
 
 
 def _init_fonts():
@@ -82,34 +85,16 @@ def _init_fonts():
 # ══════════════════════════════════════════════════════
 
 
-def render_trajectory(strokes, size=280, line_width=22, margin=15, crop_to_content=True, frame_w=1920, frame_h=1080):
-    """
-    将多笔画轨迹渲染为白底黑字图片。
-
-    Args:
-        strokes: [[(x,y),...], ...] 归一化坐标 (0-1)
-        size: 输出尺寸
-        line_width: 线宽
-        margin: 边距
-        crop_to_content: 是否裁切到内容区域
-        frame_w, frame_h: 摄像头原始分辨率（用于修正横纵比）
-
-    关键：摄像头画面是 frame_w:frame_h（如 16:9），
-    归一化坐标 x∈[0,1] y∈[0,1] 对应不同物理尺度。
-    y 方向需要乘以 (frame_w/frame_h) 来纠正比例。
-    """
+def render_trajectory(strokes, size=280, line_width=22, margin=15,
+                      crop_to_content=True, frame_w=1920, frame_h=1080):
     from PIL import ImageDraw as PILD
     from PIL import ImageOps as PILOps
 
-    # 横纵比修正系数
-    aspect = frame_w / frame_h  # e.g. 1920/1080 = 1.778
-
-    # 先用较大分辨率绘制
+    aspect = frame_w / frame_h
     draw_size = size * 2 if crop_to_content else size
     ds = draw_size
     m = margin * (draw_size / size)
 
-    # 创建画布（宽度按 size，高度按比例缩小，使实际比例匹配摄像头）
     canvas_w = ds
     canvas_h = int(ds / aspect)
     img = Image.new("L", (canvas_w, canvas_h), color=255)
@@ -123,13 +108,13 @@ def render_trajectory(strokes, size=280, line_width=22, margin=15, crop_to_conte
                 r = line_width // 2
                 draw.ellipse([px - r, py - r, px + r, py + r], fill=0)
             continue
-        pts = [(int(x * (canvas_w - 2 * m) + m), int(y * (canvas_h - 2 * m) + m)) for x, y in stroke]
+        pts = [(int(x * (canvas_w - 2 * m) + m),
+                int(y * (canvas_h - 2 * m) + m)) for x, y in stroke]
         draw.line(pts, fill=0, width=line_width)
         for px, py in (pts[0], pts[-1]):
             r = line_width // 2
             draw.ellipse([px - r, py - r, px + r, py + r], fill=0)
 
-    # 裁切到内容区域
     if crop_to_content:
         bbox = PILOps.invert(img).getbbox()
         if bbox:
@@ -141,7 +126,6 @@ def render_trajectory(strokes, size=280, line_width=22, margin=15, crop_to_conte
             y2 = min(canvas_h, y2 + pad)
             img = img.crop((x1, y1, x2, y2))
 
-        # 伸缩到目标正方形（保持宽高比，空白处填白）
         pw, ph = img.size
         if pw > 0 and ph > 0:
             scale = size / max(pw, ph)
@@ -158,53 +142,36 @@ def render_trajectory(strokes, size=280, line_width=22, margin=15, crop_to_conte
 
 
 def predict_with_cnn(strokes, frame_w=1920, frame_h=1080):
-    """调用自训练 CNN 模型预测轨迹（详细日志版）。"""
     if not os.path.exists(CNN_PYTHON):
-        print(f"  [WARN] Conda Python 不存在: {CNN_PYTHON}")
         return None
     if not os.path.exists(CNN_SCRIPT):
-        print(f"  [WARN] predict_api.py 不存在: {CNN_SCRIPT}")
         return None
 
     img = render_trajectory(strokes, frame_w=frame_w, frame_h=frame_h)
     tmp_path = os.path.join(tempfile.gettempdir(), "gesture_traj.png")
     img.save(tmp_path)
-    print(f"  [CNN] 图片: {tmp_path}")
 
     try:
         cmd = [CNN_PYTHON, CNN_SCRIPT, tmp_path]
-        print(f"  [CNN] 执行: {' '.join(cmd)}")
         proc = subprocess.run(
             cmd, capture_output=True, text=True, timeout=15,
             cwd=os.path.dirname(CNN_SCRIPT),
         )
-        print(f"  [CNN] 退出码: {proc.returncode}")
-        if proc.stderr and proc.stderr.strip():
-            print(f"  [CNN] stderr: {proc.stderr.strip()[:300]}")
         if proc.returncode != 0:
             return None
         stdout = proc.stdout.strip()
         if not stdout:
-            print("  [WARN] CNN 无输出")
             return None
         result = json.loads(stdout)
         if "error" in result:
-            print(f"  [WARN] CNN 错误: {result['error']}")
             return None
         return result
-    except subprocess.TimeoutExpired:
-        print("  [WARN] CNN 超时 (15s)")
-        return None
-    except json.JSONDecodeError as e:
-        print(f"  [WARN] CNN 输出非 JSON: {e}")
-        return None
-    except Exception as e:
-        print(f"  [WARN] CNN 异常: {e}")
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception):
         return None
 
 
 # ══════════════════════════════════════════════════════════
-# 手部骨架绘制（纯 OpenCV，无 PIL）
+# 手部骨架绘制（双色模式）
 # ══════════════════════════════════════════════════════════
 
 HAND_CONNECTIONS = [
@@ -217,18 +184,28 @@ HAND_CONNECTIONS = [
 ]
 
 
-def draw_hand_landmarks(img, landmarks, img_w, img_h):
-    """纯 OpenCV 绘制 21 个关键点 + 骨架连线"""
+def draw_hand_landmarks(img, landmarks, img_w, img_h, color=None):
+    """
+    纯 OpenCV 绘制 21 个关键点 + 骨架连线。
+    color: (B,G,R) 元组，None 则使用默认配色
+    """
+    if color is None:
+        joint_color = (0, 220, 100)
+        line_color = (80, 180, 255)
+    else:
+        joint_color = color
+        line_color = tuple(min(255, c + 60) for c in color)
+
     pts = {}
     for i, lm in enumerate(landmarks):
         x, y = int(lm.x * img_w), int(lm.y * img_h)
         pts[i] = (x, y)
-        cv2.circle(img, (x, y), 4, (0, 220, 100), -1)
+        cv2.circle(img, (x, y), 4, joint_color, -1)
         cv2.circle(img, (x, y), 6, (255, 255, 255), 1)
     for a, b in HAND_CONNECTIONS:
         if a in pts and b in pts:
-            cv2.line(img, pts[a], pts[b], (80, 180, 255), 2)
-    return img
+            cv2.line(img, pts[a], pts[b], line_color, 2)
+    return pts.get(0)
 
 
 class FPS:
@@ -247,14 +224,10 @@ class FPS:
 
 
 # ══════════════════════════════════════════════════════════
-# 右侧信息面板（一次 PIL 批量渲染所有中文）
+# 右侧信息面板（一次 PIL 批量渲染）
 # ══════════════════════════════════════════════════════════
 
-def draw_side_panel(img, gesture_info, fps, extra=None):
-    """
-    纯 PIL 渲染右侧信息面板。所有文字、线条、色块均在 PIL 画布上绘制，
-    全程只做一次 BGR→PIL→BGR 转换，彻底避免坐标混乱。
-    """
+def draw_side_panel(img, hands_info, fps, extra=None):
     if extra is None:
         extra = {}
     drawing_mode = extra.get("drawing_mode", False)
@@ -262,22 +235,15 @@ def draw_side_panel(img, gesture_info, fps, extra=None):
     stroke_count = extra.get("stroke_count", 0)
     traj_result = extra.get("traj_result", None)
     h, w = img.shape[:2]
-    px = w - 310  # 面板左边界
+    px = w - 310
 
-    name = gesture_info.get("gesture", "无手势")
-    conf = gesture_info.get("confidence", 0)
-    action = gesture_info.get("action", "—")
-
-    # ── 一次转 PIL ──
     pil_img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
     d = ImageDraw.Draw(pil_img)
 
-    # 面板背景（纯色，简单可靠）
     d.rectangle([px, 0, w, h], fill=(28, 28, 30))
 
-    # ── 布局参数（所有 y 坐标均以 PIL 为准） ──
-    X0 = px + 15       # 文字左边界
-    XR = w - 15        # 右边界
+    X0 = px + 15
+    XR = w - 15
     LINE_COLOR = (72, 72, 74)
     BG_COLOR = (52, 52, 54)
 
@@ -289,11 +255,10 @@ def draw_side_panel(img, gesture_info, fps, extra=None):
 
     y = 14
 
-    # ── 标题行 ──
+    # 标题
     d.text((X0, y), "手势识别系统", font=_FONT_SMALL, fill=(100, 220, 255))
     y += 32
 
-    # 书写模式指示器
     if drawing_mode:
         if drawing_paused:
             d.text((X0 + 130, y - 28), f"[已暂停 {stroke_count}笔]",
@@ -307,43 +272,64 @@ def draw_side_panel(img, gesture_info, fps, extra=None):
         d.text((X0 + 110, y - 28), f"[{src_tag}] {traj_result['display']}",
                font=_load_font(16), fill=(255, 200, 100))
 
-    # FPS（用 PIL 画，避免与标题重叠）
     fps_color = (0, 220, 0) if fps >= 25 else (0, 180, 255) if fps >= 15 else (0, 100, 255)
     d.text((X0, y), f"FPS: {fps:.0f}", font=_FONT_XS, fill=fps_color)
     y += 26
     hline(y)
     y += 12
 
-    # ── 当前手势（大字） ──
-    gc = (0, 255, 120) if name not in ("无手势",) else (140, 140, 140)
-    d.text((X0, y), name, font=_FONT_LARGE, fill=gc)
-    y += 46
+    # ── 左手信息 ──
+    left = hands_info.get("left")
+    if left and left["gesture"] != "无手势":
+        d.text((X0, y), "🟦 左手 (控制)", font=_load_font(16), fill=(100, 180, 255))
+        y += 22
+        d.text((X0 + 5, y), left["gesture"], font=_FONT_MID, fill=(120, 200, 255))
+        y += 28
+        d.text((X0 + 5, y), left["action"], font=_FONT_XS, fill=(200, 200, 200))
+        y += 20
+    else:
+        d.text((X0, y), "🟦 左手 —", font=_load_font(16), fill=(100, 100, 100))
+        y += 22
+        d.text((X0 + 5, y), "未检测到", font=_FONT_MID, fill=(100, 100, 100))
+        y += 28
+    hline(y)
+    y += 10
 
-    # 置信度进度条
-    if conf > 0:
-        bar_w = 270
-        bar_h = 6
-        rect(X0, y, X0 + bar_w, y + bar_h, BG_COLOR)
-        fw = int(bar_w * min(conf, 1.0))
-        bc = (0, 230, 80) if conf > 0.8 else (0, 180, 240) if conf > 0.5 else (0, 100, 240)
-        rect(X0, y, X0 + fw, y + bar_h, bc)
-        y += 8
-        d.text((X0 + 5, y), f"{conf*100:.0f}%", font=_load_font(14), fill=(190, 190, 190))
-        y += 16
-    y += 8
-
-    # ── 操作 ──
-    d.text((X0, y), "操作:", font=_FONT_XS, fill=(180, 180, 180))
-    y += 22
-    d.text((X0, y), action, font=_FONT_MID, fill=(255, 210, 100))
-    y += 34
+    # ── 右手信息 ──
+    right = hands_info.get("right")
+    if right and right["gesture"] != "无手势":
+        d.text((X0, y), "🟩 右手 (书写)", font=_load_font(16), fill=(100, 255, 150))
+        y += 22
+        d.text((X0 + 5, y), right["gesture"], font=_FONT_MID, fill=(120, 255, 160))
+        y += 28
+        d.text((X0 + 5, y), right["action"], font=_FONT_XS, fill=(200, 200, 200))
+        y += 20
+    else:
+        d.text((X0, y), "🟩 右手 —", font=_load_font(16), fill=(100, 100, 100))
+        y += 22
+        d.text((X0 + 5, y), "未检测到", font=_FONT_MID, fill=(100, 100, 100))
+        y += 28
     hline(y)
     y += 12
 
-    # ── 手指状态 / 概率分布 ──
+    # 操作提示（非书写模式下）
+    if not drawing_mode and not traj_result:
+        d.text((X0, y), "操作提示", font=_load_font(16), fill=(170, 170, 170))
+        y += 24
+        tips = [
+            "左手 👌 OK → 书写模式",
+            "左手 ✊ 拳头 → 暂停笔画",
+            "左手 ✋ 张开 → 清空画布",
+            "右手 ☝️ 食指 → 空中写字",
+            "左手 👍 点赞 → 提交识别",
+        ]
+        for tip in tips:
+            d.text((X0 + 5, y), tip, font=_FONT_MINI, fill=(190, 190, 190))
+            y += 18
+
+    # 轨迹概率分布
     probs = traj_result.get("probs", []) if traj_result else []
     if probs and len(probs) == 10:
-        # 有 CNN 概率分布 → 显示 Top-10 条状图
         d.text((X0, y), "预测概率分布", font=_load_font(16), fill=(100, 220, 255))
         y += 24
         bar_w = 260
@@ -362,19 +348,7 @@ def draw_side_panel(img, gesture_info, fps, extra=None):
             d.text((X0 + bw + 4, by - 3), f"{dgt}:{p*100:.1f}%",
                    font=_load_font(11), fill=(190, 190, 190))
         y += 10 * (8 + 2) + 6
-    else:
-        # 正常显示手指状态
-        d.text((X0, y), "手指状态", font=_load_font(16), fill=(170, 170, 170))
-        y += 26
-        fingers = ["拇指", "食指", "中指", "无名指", "小指"]
-        states = gesture_info.get("finger_states", [False] * 5)
-        for i, (fn, st) in enumerate(zip(fingers, states)):
-            cx = X0 + (i & 1) * 145
-            cy = y + (i // 2) * 26
-            sc = (100, 240, 100) if st else (240, 100, 100)
-            stxt = "v 伸直" if st else "x 弯曲"
-            d.text((cx, cy), f"{fn}: {stxt}", font=_FONT_MINI, fill=sc)
-        y += 80
+
     hline(y)
     y += 12
 
@@ -388,15 +362,18 @@ def draw_side_panel(img, gesture_info, fps, extra=None):
     short_map = {"手掌张开": "[开]", "拳头": "[拳]", "食指": "[指]",
                  "胜利": "[V]", "OK": "[OK]", "点赞": "[赞]"}
 
+    active_left = hands_info.get("left", {}).get("gesture", "")
+    active_right = hands_info.get("right", {}).get("gesture", "")
+
     for gn in all_g:
-        is_active = (name == gn)
+        is_active = (gn == active_left or gn == active_right)
         box_color = gcol[gn] if is_active else BG_COLOR
         text_color = (0, 0, 0) if is_active else gcol[gn]
         rect(X0, y, X0 + 25, y + 22, box_color)
         d.text((X0 + 33, y + 2), f"{short_map[gn]} {gn}", font=_FONT_XXS, fill=text_color)
         y += 24
 
-    # ── 底部状态栏（PIL 中文，替换 cv2.putText 乱码） ──
+    # ── 底部状态栏 ──
     bar_h = 26
     bar_y = h - bar_h
     bar_color = (40, 40, 42)
@@ -406,19 +383,18 @@ def draw_side_panel(img, gesture_info, fps, extra=None):
 
     if drawing_mode:
         if drawing_paused:
-            hint = "食指:新笔画  |  手掌:清空  |  OK:识别"
+            hint = "左手:✊继续新笔  ·  ✋清空  ·  👍识别退出"
         else:
-            hint = "握拳:暂停  |  手掌:清空  |  OK:识别 & 退出"
+            hint = "右手:✍️写字  ·  左手:✊暂停  ·  ✋清空  ·  👍识别退出"
         d.text((10, bar_y + 3), hint, font=_FONT_XS, fill=(0, 255, 255))
-        # 笔画计数
         if stroke_count > 0:
             d.text((w - 150, bar_y + 3), f"共 {stroke_count} 笔",
                    font=_FONT_XS, fill=(200, 200, 200))
     else:
-        d.text((10, bar_y + 3), "OK:书写模式 | ESC:退出 | S:截图 | F:全屏",
+        d.text((10, bar_y + 3), "左手OK:书写模式 | ESC:退出 | S:截图 | F:全屏",
                font=_FONT_XS, fill=(160, 160, 160))
 
-    # ── 暂停覆盖文字（画面中央） ──
+    # 暂停覆盖文字
     if drawing_paused and drawing_mode:
         pause_text = f"已暂停 (共 {stroke_count} 笔)"
         bbox = d.textbbox((0, 0), pause_text, font=_FONT_MID)
@@ -427,9 +403,12 @@ def draw_side_panel(img, gesture_info, fps, extra=None):
         d.rectangle([tx - 10, 40, tx + tw + 10, 72], fill=(0, 0, 0))
         d.text((tx, 42), pause_text, font=_FONT_MID, fill=(0, 220, 255))
 
-    # ── 一次转回 OpenCV ──
     img[:] = cv2.cvtColor(np.array(pil_img.convert("RGB")), cv2.COLOR_RGB2BGR)
     return img
+
+
+def _make_empty_hand_info():
+    return {"gesture": "无手势", "action": "—", "confidence": 0.0, "finger_states": [False] * 5}
 
 
 # ══════════════════════════════════════════════════════════
@@ -440,6 +419,7 @@ def main():
     print("=" * 58)
     print("  GestureInteractionSystem")
     print("  基于 MediaPipe Task API 的实时手势识别系统")
+    print("  🖐️  双手模式：左手控制 | 右手书写")
     print("=" * 58)
 
     _init_fonts()
@@ -466,7 +446,7 @@ def main():
     base_opts = mp_python.BaseOptions(model_asset_path=MODEL_PATH)
     opts = vision.HandLandmarkerOptions(
         base_options=base_opts,
-        num_hands=1,
+        num_hands=2,
         min_hand_detection_confidence=0.5,
         min_hand_presence_confidence=0.5,
         min_tracking_confidence=0.5,
@@ -478,39 +458,111 @@ def main():
     # ── 3. 识别器 ──
     print("[3/3] 初始化手势识别引擎...")
     recognizer = GestureRecognizer()
-    stabilizer = GestureStabilizer(window_size=15, min_ratio=0.55, lock_frames=6)
+    left_stabilizer = GestureStabilizer(window_size=12, min_ratio=0.55, lock_frames=5)
+    right_stabilizer = GestureStabilizer(window_size=12, min_ratio=0.55, lock_frames=5)
     fps_counter = FPS()
 
     print("\n  系统就绪！ 🦞")
     print("  ─────────────────────────────")
+    print("  🖐️  双手模式：")
+    print("     左手(蓝) — 控制: OK切换/拳头暂停/手掌清空/点赞提交")
+    print("     右手(绿) — 书写: 食指写字")
+    print("  ─────────────────────────────")
     print("  ESC  退出    S  截图    F  全屏")
-    # CNN 可用性检查
     if os.path.exists(CNN_PYTHON) and os.path.exists(CNN_SCRIPT):
         print(f"  CNN 模型: 已检测到 ✅")
     else:
         print(f"  CNN 模型: 未找到 ❌ (回退 $1 识别器)")
-        if not os.path.exists(CNN_PYTHON):
-            print(f"            路径不存在: {CNN_PYTHON}")
-        if not os.path.exists(CNN_SCRIPT):
-            print(f"            路径不存在: {CNN_SCRIPT}")
     print("  ─────────────────────────────\n")
 
     window = "GestureInteractionSystem"
     cv2.namedWindow(window, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window, 1280, 720)
     fullscreen = False
-    last_gesture = None
     frame_ts = 0
+
+    # ── 手势跟踪（防止重复触发） ──
+    prev_left_gesture = None
+    prev_right_gesture = None
 
     # ── 轨迹识别状态 ──
     drawing_mode = False
-    traj_strokes = []          # 已完成笔画 [[(x,y),...], ...]
-    traj_current = []           # 当前笔画 [(x,y),...]
-    drawing_paused = False      # 笔抬起（暂停）
+    traj_strokes = []
+    traj_current = []
+    drawing_paused = False
     traj_result = None
     traj_timer = 0
     traj_recognizer = TrajectoryRecognizer()
 
+    # ── 辅助函数（闭包，引用 main 的局部变量） ──
+
+    def _toggle_pause():
+        nonlocal drawing_paused, traj_current, traj_strokes, traj_result
+        if not drawing_paused:
+            if traj_current:
+                trim = min(10, len(traj_current) // 4)
+                if trim > 0 and len(traj_current) > trim + 3:
+                    traj_current = traj_current[:-trim]
+                traj_strokes.append(traj_current)
+                traj_current = []
+            drawing_paused = True
+            print(f"  ⏸️  笔画 {len(traj_strokes)} 完成，暂停中...")
+        else:
+            traj_strokes = []
+            traj_current = []
+            drawing_paused = False
+            traj_result = None
+            print("  🗑️  全部笔画已清空")
+
+    def _do_submit():
+        nonlocal traj_strokes, traj_current, traj_result, traj_timer
+        if traj_current:
+            traj_strokes.append(traj_current)
+            traj_current = []
+        all_pts = [p for stroke in traj_strokes for p in stroke]
+        if len(all_pts) > 10:
+            cnn_result = predict_with_cnn(traj_strokes, frame_w=real_w, frame_h=real_h)
+            if cnn_result:
+                preview_img = render_trajectory(
+                    traj_strokes, size=280, line_width=18, frame_w=real_w, frame_h=real_h)
+                traj_result = {
+                    "display": cnn_result["display"],
+                    "confidence": cnn_result["confidence"],
+                    "probs": cnn_result.get("probs", []),
+                    "source": "CNN",
+                    "preview": preview_img,
+                }
+                top3 = sorted(enumerate(cnn_result.get("probs", [])), key=lambda x: -x[1])[:3]
+                tops = ", ".join(f"{d}:{p*100:.1f}%" for d, p in top3 if p > 0.05)
+                print(f"  ✅ CNN: {cnn_result['display']} ({cnn_result['confidence']*100:.1f}%)  |  {tops}")
+            else:
+                preview_img = render_trajectory(
+                    traj_strokes, size=280, line_width=18, frame_w=real_w, frame_h=real_h)
+                r = traj_recognizer.recognize(all_pts)
+                traj_result = {
+                    "display": r["display"],
+                    "confidence": r["confidence"],
+                    "probs": [],
+                    "source": "$1",
+                    "preview": preview_img,
+                }
+                print(f"  ✅ $1: {r['display']}  (置信度 {r['confidence']*100:.0f}%)")
+            traj_timer = 90
+        else:
+            print("  ❌ 轨迹太短，已忽略")
+        traj_strokes = []
+        traj_current = []
+
+    def _track_index_finger(hand_lms):
+        nonlocal traj_current
+        if hand_lms is None:
+            return
+        ix = hand_lms[8].x
+        iy = hand_lms[8].y
+        if len(traj_current) == 0 or math.dist((ix, iy), traj_current[-1]) > 0.002:
+            traj_current.append((ix, iy))
+
+    # ── 主循环 ──
     while True:
         ok, frame = cap.read()
         if not ok:
@@ -520,206 +572,256 @@ def main():
         frame = cv2.flip(frame, 1)
         h, w = frame.shape[:2]
 
-        # MediaPipe 推理
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB,
-                            data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        frame_ts += 33  # 约 30fps 的时间戳步进
+        # ── MediaPipe 推理 ──
+        mp_image = mp.Image(
+            image_format=mp.ImageFormat.SRGB,
+            data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
+        )
+        frame_ts += 33
         result = landmarker.detect_for_video(mp_image, frame_ts)
 
-        gesture_info = {
-            "gesture": "无手势", "action": "—",
-            "confidence": 0.0, "finger_states": [False] * 5,
-        }
+        # ── 分离左右手 ──
+        left_info = _make_empty_hand_info()
+        right_info = _make_empty_hand_info()
+        left_lms = None
+        right_lms = None
+        num_hands = 0
 
         if result.hand_landmarks and len(result.hand_landmarks) > 0:
-            hand_lms = result.hand_landmarks[0]
-            handedness = "Right"
-            if result.handedness and len(result.handedness) > 0:
-                handedness = result.handedness[0][0].category_name
+            num_hands = len(result.hand_landmarks)
+            for i, hand_lms in enumerate(result.hand_landmarks):
+                handedness = "Right"
+                if result.handedness and len(result.handedness) > i and len(result.handedness[i]) > 0:
+                    handedness = result.handedness[i][0].category_name
 
-            frame = draw_hand_landmarks(frame, hand_lms, w, h)
-            gesture_info = recognizer.recognize(hand_lms, handedness)
-
-        # 防抖稳定：原始手势 → 稳定手势
-        raw_gesture = gesture_info["gesture"]
-        stable_gesture = stabilizer.update(raw_gesture)
-        if stable_gesture != raw_gesture:
-            gesture_info["gesture"] = stable_gesture
-            gesture_info["action"] = GESTURE_ACTIONS.get(stable_gesture, "无")
-
-        # ── 书写模式逻辑 ──
-        cur = gesture_info["gesture"]
-
-        # OK 手势切换书写模式（防重复触发，加置信度门槛）
-        if cur == "OK" and cur != last_gesture and gesture_info["confidence"] > 0.7:
-            last_gesture = cur
-            drawing_mode = not drawing_mode
-            if drawing_mode:
-                traj_strokes = []
-                traj_current = []
-                drawing_paused = False
-                traj_result = None
-                print("  ✏️  进入书写模式 — 伸出食指写字，握拳暂停/起笔")
-            else:
-                # 退出时：如果有未完成笔画，先保存
-                if traj_current:
-                    traj_strokes.append(traj_current)
-                    traj_current = []
-                all_pts = [p for stroke in traj_strokes for p in stroke]
-                if len(all_pts) > 10:
-                    # 优先用 CNN 模型
-                    cnn_result = predict_with_cnn(traj_strokes, frame_w=w, frame_h=h)
-                    if cnn_result:
-                        preview_img = render_trajectory(traj_strokes, size=280, line_width=18, frame_w=w, frame_h=h)
-                        traj_result = {
-                            "display": cnn_result["display"],
-                            "confidence": cnn_result["confidence"],
-                            "probs": cnn_result.get("probs", []),
-                            "source": "CNN",
-                            "preview": preview_img,
-                        }
-                        top3 = sorted(enumerate(cnn_result.get("probs", [])), key=lambda x: -x[1])[:3]
-                        tops = ", ".join(f"{d}:{p*100:.1f}%" for d, p in top3 if p > 0.05)
-                        print(f"  ✅ CNN: {cnn_result['display']} ({cnn_result['confidence']*100:.1f}%)  |  {tops}")
-                    else:
-                        # CNN 不可用时回退 $1 识别器
-                        preview_img = render_trajectory(traj_strokes, size=280, line_width=18, frame_w=w, frame_h=h)
-                        result = traj_recognizer.recognize(all_pts)
-                        traj_result = {
-                            "display": result["display"],
-                            "confidence": result["confidence"],
-                            "probs": [],
-                            "source": "$1",
-                            "preview": preview_img,
-                        }
-                        print(f"  ✅ $1: {result['display']}  (置信度 {result['confidence']*100:.0f}%)")
-                    traj_timer = 90
+                if handedness == "Left":
+                    left_lms = hand_lms
+                    draw_hand_landmarks(frame, hand_lms, w, h, color=(220, 100, 50))
+                    left_info = recognizer.recognize(hand_lms, handedness)
                 else:
-                    print("  ❌ 轨迹太短，已忽略")
-                traj_strokes = []
-                traj_current = []
-                drawing_paused = False
-                print("  👋 退出书写模式")
+                    right_lms = hand_lms
+                    draw_hand_landmarks(frame, hand_lms, w, h, color=(80, 220, 60))
+                    right_info = recognizer.recognize(hand_lms, handedness)
 
-        # 书写模式下：手掌张开 = 清空画布
-        if drawing_mode and cur == "手掌张开" and cur != last_gesture:
-            last_gesture = cur
-            traj_strokes = []
-            traj_current = []
-            drawing_paused = False
-            traj_result = None
-            print("  🧹 画布已清空")
+        # ── 防抖 ──
+        left_raw = left_info["gesture"]
+        left_stable = left_stabilizer.update(left_raw)
+        if left_stable != left_raw:
+            left_info["gesture"] = left_stable
+            left_info["action"] = GESTURE_ACTIONS.get(left_stable, "无")
 
-        # 书写模式下：拳头 = 暂停/继续（笔起/笔落）
-        if drawing_mode and cur == "拳头" and cur != last_gesture:
-            last_gesture = cur
-            if not drawing_paused:
-                # 正在画 → 暂停，保存当前笔画（裁去末尾过渡噪声）
-                if traj_current:
-                    # 去掉最后 ~10 帧的过渡点（握拳过程中手指移动的拖尾）
-                    trim = min(10, len(traj_current) // 4)
-                    if trim > 0 and len(traj_current) > trim + 3:
-                        traj_current = traj_current[:-trim]
-                    traj_strokes.append(traj_current)
-                    traj_current = []
-                drawing_paused = True
-                print(f"  ⏸️  笔画 {len(traj_strokes)} 完成，握拳暂停中...")
+        right_raw = right_info["gesture"]
+        right_stable = right_stabilizer.update(right_raw)
+        if right_stable != right_raw:
+            right_info["gesture"] = right_stable
+            right_info["action"] = GESTURE_ACTIONS.get(right_stable, "无")
+
+        left_cur = left_info["gesture"]
+        right_cur = right_info["gesture"]
+
+        # ── 控制逻辑 ──
+        single_hand = (num_hands == 1)
+
+        if single_hand:
+            # ── 单手回退（原版混合逻辑） ──
+            if left_lms:
+                active_cur = left_cur
+                active_info = left_info
+                active_lms = left_lms
+                # 面板统一显示左手
+                right_info = left_info
             else:
-                # 已暂停 → 再次握拳清空全部笔画
+                active_cur = right_cur
+                active_info = right_info
+                active_lms = right_lms
+                left_info = right_info
+
+            prev = prev_left_gesture if left_lms else prev_right_gesture
+
+            # OK 切换
+            if active_cur == "OK" and active_cur != prev and active_info["confidence"] > 0.7:
+                if left_lms:
+                    prev_left_gesture = active_cur
+                else:
+                    prev_right_gesture = active_cur
+                drawing_mode = not drawing_mode
+                if drawing_mode:
+                    traj_strokes = []
+                    traj_current = []
+                    drawing_paused = False
+                    traj_result = None
+                    print("  ✏️  单手 · 进入书写")
+                else:
+                    _do_submit()
+                    print("  👋  单手 · 退出书写")
+
+            # 手掌清空
+            if drawing_mode and active_cur == "手掌张开" and active_cur != prev:
+                if left_lms:
+                    prev_left_gesture = active_cur
+                else:
+                    prev_right_gesture = active_cur
                 traj_strokes = []
                 traj_current = []
                 drawing_paused = False
                 traj_result = None
-                print("  🗑️  全部笔画已清空，可重新书写")
+                print("  🧹 画布已清空")
 
-        # 书写模式下：记录食指指尖轨迹（仅在当前手势为食指时）
-        if drawing_mode and result.hand_landmarks and not drawing_paused:
-            # 只有稳定手势为「食指」时才记录轨迹，避免切换手势时的拖尾噪声
-            if cur == "食指":
-                hand_lms = result.hand_landmarks[0]
-                ix = hand_lms[8].x
-                iy = hand_lms[8].y
-                if len(traj_current) == 0 or \
-                   math.dist((ix, iy), traj_current[-1]) > 0.002:
-                    traj_current.append((ix, iy))
+            # 拳头暂停/继续
+            if drawing_mode and active_cur == "拳头" and active_cur != prev:
+                if left_lms:
+                    prev_left_gesture = active_cur
+                else:
+                    prev_right_gesture = active_cur
+                _toggle_pause()
 
-        # 暂停状态下，食指重新伸出 → 自动开始新笔画
-        if drawing_mode and drawing_paused and cur == "食指" and cur != last_gesture and gesture_info["confidence"] > 0.75:
-            last_gesture = cur
-            drawing_paused = False
-            print(f"  ✍️  开始第 {len(traj_strokes) + 1} 笔...")
+            # 食指追踪
+            if drawing_mode and not drawing_paused and active_cur == "食指":
+                _track_index_finger(active_lms)
 
-        # 手势切换日志（OK/拳头/手掌张开已在上面处理）
-        if cur != last_gesture and cur not in ("OK", "拳头", "手掌张开"):
-            last_gesture = cur
-            if cur not in ("无手势",) and not drawing_mode:
-                print(f"  🎯 {cur}  →  {gesture_info['action']}  (置信度 {gesture_info['confidence']*100:.0f}%)")
+            # 暂停下食指继续
+            if drawing_mode and drawing_paused and active_cur == "食指" and active_cur != prev and active_info["confidence"] > 0.75:
+                if left_lms:
+                    prev_left_gesture = active_cur
+                else:
+                    prev_right_gesture = active_cur
+                drawing_paused = False
+                print(f"  ✍️  继续第 {len(traj_strokes) + 1} 笔...")
+
+            # 日志
+            if active_cur != prev and active_cur not in ("OK", "拳头", "手掌张开", "无手势"):
+                if left_lms:
+                    prev_left_gesture = active_cur
+                else:
+                    prev_right_gesture = active_cur
+                if not drawing_mode:
+                    print(f"  🎯 {active_cur}  →  {active_info['action']}")
+
+            # 清空 prev 以便下次触发
+            if active_cur == "无手势":
+                if left_lms:
+                    prev_left_gesture = None
+                else:
+                    prev_right_gesture = None
+
+        else:
+            # ── 双手模式 ──
+
+            # 左手 OK → 切换书写
+            if left_cur == "OK" and left_cur != prev_left_gesture and left_info["confidence"] > 0.7:
+                prev_left_gesture = left_cur
+                drawing_mode = not drawing_mode
+                if drawing_mode:
+                    traj_strokes = []
+                    traj_current = []
+                    drawing_paused = False
+                    traj_result = None
+                    print("  ✏️  双手 · 进入书写 — 右手写字，左手控制")
+                else:
+                    _do_submit()
+                    print("  👋  双手 · 退出书写")
+
+            # 左手 手掌 → 清空
+            if drawing_mode and left_cur == "手掌张开" and left_cur != prev_left_gesture:
+                prev_left_gesture = left_cur
+                traj_strokes = []
+                traj_current = []
+                drawing_paused = False
+                traj_result = None
+                print("  🧹 画布已清空")
+
+            # 左手 拳头 → 暂停/继续
+            if drawing_mode and left_cur == "拳头" and left_cur != prev_left_gesture:
+                prev_left_gesture = left_cur
+                _toggle_pause()
+
+            # 左手 点赞 → 提交并退出
+            if drawing_mode and left_cur == "点赞" and left_cur != prev_left_gesture and left_info["confidence"] > 0.75:
+                prev_left_gesture = left_cur
+                _do_submit()
+                drawing_mode = False
+                drawing_paused = False
+                print("  👋  点赞提交 · 退出书写")
+
+            # 右手 食指 → 追踪轨迹
+            if drawing_mode and not drawing_paused and right_cur == "食指":
+                _track_index_finger(right_lms)
+
+            # 暂停下右手食指 → 继续
+            if drawing_mode and drawing_paused and right_cur == "食指" and right_cur != prev_right_gesture and right_info["confidence"] > 0.75:
+                prev_right_gesture = right_cur
+                drawing_paused = False
+                print(f"  ✍️  继续第 {len(traj_strokes) + 1} 笔...")
+
+            # 日志
+            if left_cur != prev_left_gesture and left_cur not in ("OK", "拳头", "手掌张开", "无手势"):
+                prev_left_gesture = left_cur
+                if not drawing_mode:
+                    print(f"  🎯 [左手] {left_cur}  →  {left_info['action']}")
+
+            if right_cur != prev_right_gesture and right_cur not in ("无手势",):
+                prev_right_gesture = right_cur
+                if not drawing_mode:
+                    print(f"  🎯 [右手] {right_cur}  →  {right_info['action']}")
+
+            # 重置 prev 允许下次触发
+            if left_cur == "无手势":
+                prev_left_gesture = None
+            if right_cur == "无手势":
+                prev_right_gesture = None
 
         # ── 绘制轨迹 ──
-        h, w = frame.shape[:2]
-
-        # 已完成笔画（实线）
         for stroke in traj_strokes:
             if len(stroke) >= 2:
                 pts = [(int(x * w), int(y * h)) for x, y in stroke]
                 for i in range(1, len(pts)):
                     cv2.line(frame, pts[i - 1], pts[i], (0, 220, 220), 2)
-                cv2.circle(frame, pts[0], 4, (0, 180, 200), -1)     # 起点
-                cv2.circle(frame, pts[-1], 4, (0, 160, 180), -1)    # 终点
+                cv2.circle(frame, pts[0], 4, (0, 180, 200), -1)
+                cv2.circle(frame, pts[-1], 4, (0, 160, 180), -1)
 
-        # 当前笔画（亮黄，闪烁端点）
         if traj_current and len(traj_current) >= 2:
             pts = [(int(x * w), int(y * h)) for x, y in traj_current]
             for i in range(1, len(pts)):
                 cv2.line(frame, pts[i - 1], pts[i], (0, 255, 255), 3)
             cv2.circle(frame, pts[0], 5, (0, 200, 255), -1)
             if not drawing_paused:
-                cv2.circle(frame, pts[-1], 7, (0, 255, 255), -1)    # 闪烁笔尖
+                cv2.circle(frame, pts[-1], 7, (0, 255, 255), -1)
 
-        # 暂停指示器（已移入 draw_side_panel PIL 渲染）
-
-        # 倒计时清除识别结果
         if traj_timer > 0:
             traj_timer -= 1
             if traj_timer == 0:
                 traj_result = None
 
-        # 传递给面板的额外信息
+        # ── 面板 ──
+        hands_info = {"left": left_info, "right": right_info}
         panel_extra = {
             "drawing_mode": drawing_mode,
             "drawing_paused": drawing_paused,
             "stroke_count": len(traj_strokes) + (1 if traj_current else 0),
             "traj_result": traj_result,
-            "preview": traj_result.get("preview") if traj_result else None,
         }
 
-        # UI 面板（含底部状态栏，PIL 渲染全部中文）
         fps = fps_counter.tick()
-        frame = draw_side_panel(frame, gesture_info, fps, panel_extra)
+        frame = draw_side_panel(frame, hands_info, fps, panel_extra)
 
-        # 轨迹预览图（左下角大图，自适应缩放不拉伸）
+        # ── 轨迹预览 ──
         preview = traj_result.get("preview") if traj_result else None
         if preview:
-            h, w = frame.shape[:2]
             pv = preview.copy()
             pv_w, pv_h = pv.size
-            # 自适应：取 min(width, height) 方向撑满，另一方向保持比例
             max_display = 280
             scale = max_display / max(pv_w, pv_h)
             new_w, new_h = int(pv_w * scale), int(pv_h * scale)
             pv = pv.resize((new_w, new_h), Image.LANCZOS)
-            # 灰色背景板
             bx, by = 10, h - new_h - 50
             bw, bh = new_w + 6, new_h + 6
             cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), (80, 80, 80), -1)
             cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), (160, 160, 160), 1)
-            # 白底
             cv2.rectangle(frame, (bx + 3, by + 3), (bx + 3 + new_w, by + 3 + new_h), (255, 255, 255), -1)
             pv_np = np.array(pv)
             pv_bgr = cv2.cvtColor(pv_np, cv2.COLOR_GRAY2BGR)
             frame[by + 3:by + 3 + new_h, bx + 3:bx + 3 + new_w] = pv_bgr
-            # 标签
-            label = f"{traj_result.get('source','')}: {traj_result['display']}"
+            label = f"{traj_result.get('source', '')}: {traj_result['display']}"
             cv2.putText(frame, label, (bx, by - 6),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
 
