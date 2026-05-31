@@ -595,6 +595,8 @@ def main():
                 handedness = "Right"
                 if result.handedness and len(result.handedness) > i and len(result.handedness[i]) > 0:
                     handedness = result.handedness[i][0].category_name
+                # 画面镜像反转了左右手，MediaPipe 检测到的 handedness 需取反
+                handedness = "Left" if handedness == "Right" else "Right"
 
                 if handedness == "Left":
                     left_lms = hand_lms
