@@ -140,53 +140,41 @@ class GestureRecognizer:
 
     def _thumb_extended(self, lm, is_right: bool, sz: float) -> bool:
         """
-        拇指伸出检测（收紧阈值，减少误判）。
-
-        ① 竖起：拇指尖明显高于 IP 关节（点赞）
-        ② 张开：拇指尖显著远离手掌（手掌张开）
-
-        握拳时拇指自然微翘不应算「伸出」。
+        拇指伸出检测（宽松阈值，优先保障竖起的拇指能被识别）。
         """
         tip_y = lm[THUMB_TIP].y
         ip_y = lm[THUMB_IP].y
         tip_x = lm[THUMB_TIP].x
         idx_x = lm[INDEX_MCP].x
 
-        # 竖起：拇指尖明显高于 IP
-        thumb_up = (ip_y - tip_y) > sz * 0.07
+        # 竖起：拇指尖高于 IP 关节（阈值降低，适应倾斜角度）
+        thumb_up = (ip_y - tip_y) > sz * 0.05
 
-        # 水平张开：拇指尖显著远离食指根部
-        gap = sz * 0.08
+        # 水平张开：拇指尖远离食指根部
+        gap = sz * 0.06
         if is_right:
             thumb_out = tip_x < (idx_x - gap)
         else:
             thumb_out = tip_x > (idx_x + gap)
 
-        return thumb_up or thumb_out
+        # 补充：指尖高于食指 MCP 也算竖起（更鲁棒）
+        tip_above_idx = (lm[INDEX_MCP].y - tip_y) > sz * 0.02
+
+        return thumb_up or thumb_out or tip_above_idx
 
     def _thumb_pointing_up(self, lm, sz: float) -> bool:
         """
         拇指是否真正朝上（区分点赞 vs 握拳拇指外翘）。
-
-        要求：
-          1. 拇指尖明显高于 IP 关节
-          2. 拇指尖也高于 MCP 关节（确保整体竖起，不是关节微弯）
-          3. 拇指尖不能离手掌太远（点赞时拇指贴近手掌侧面）
         """
         tip = lm[THUMB_TIP]
         ip = lm[THUMB_IP]
         mcp = lm[THUMB_MCP]
 
-        # 必须同时高于 IP 和 MCP
-        above_ip = (ip.y - tip.y) > sz * 0.06
-        above_mcp = (mcp.y - tip.y) > sz * 0.03
+        # 拇指尖明显高于 IP 和 MCP 即算竖起（阈值放宽，适应倾斜角度）
+        above_ip = (ip.y - tip.y) > sz * 0.04
+        above_mcp = (mcp.y - tip.y) > sz * 0.02
 
         if not (above_ip and above_mcp):
-            return False
-
-        # 水平偏移不能太大（点赞时拇指在手掌边缘，不会飘太远）
-        horizontal_offset = abs(tip.x - mcp.x)
-        if horizontal_offset > sz * 0.25:
             return False
 
         return True
@@ -201,12 +189,13 @@ class GestureRecognizer:
         thumb, index, middle, ring, pinky = fs
         ext = sum(fs)
 
-        # ── 拳头 ✊（必须放最前：全弯 = 拳头，避免误判为 OK）──
+        # ── 拳头 ✊（全弯=拳，拇指微伸但没竖起也算拳）──
         if ext == 0:
             return "拳头", 0.95
         if ext == 1 and thumb and not self._thumb_pointing_up(lm, sz):
             return "拳头", 0.90
-        if ext <= 2 and not index and not middle:
+        # 只有拇指伸直的 ext=1 留给点赞判断，不在这里拦截
+        if ext <= 2 and not index and not middle and not (ext == 1 and thumb):
             return "拳头", 0.85
 
         # ── 手掌张开 ✋ ──
