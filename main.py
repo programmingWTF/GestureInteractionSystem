@@ -676,15 +676,13 @@ def main():
                     prev_right_gesture = active_cur
                 _toggle_pause()
 
-            # 食指追踪
+            # 食指追踪（仅右手，左手不参与）
             if drawing_mode and not drawing_paused and active_cur == "食指":
-                _track_index_finger(active_lms)
+                if not left_lms:  # 只有右手出现在画面时才追踪
+                    _track_index_finger(active_lms)
 
-            # 暂停下继续：只用右手食指 + 冷却 + 右手必须收回再伸出
-            if drawing_mode and drawing_paused and active_cur == "食指" and active_info["confidence"] > 0.75 and resume_guard <= 0:
-                if not left_lms:
-                    # 只有右手时，单手上也是 index 续画
-                    pass
+            # 暂停下继续（仅右手，左手不可续画）
+            if drawing_mode and drawing_paused and active_cur == "食指" and active_info["confidence"] > 0.75 and not left_lms and resume_guard <= 0:
                 traj_current = []
                 drawing_paused = False
                 resume_guard = 10
