@@ -201,26 +201,38 @@ class GestureRecognizer:
         thumb, index, middle, ring, pinky = fs
         ext = sum(fs)
 
-        # ── OK 👌 ──（两个条件任满足其一）
+        # ── 拳头 ✊（必须放最前：全弯 = 拳头，避免误判为 OK）──
+        if ext == 0:
+            return "拳头", 0.95
+        if ext == 1 and thumb and not self._thumb_pointing_up(lm, sz):
+            return "拳头", 0.90
+        if ext <= 2 and not index and not middle:
+            return "拳头", 0.85
+
+        # ── 手掌张开 ✋ ──
+        if ext >= 5:
+            return "手掌张开", 0.94
+        if ext == 4 and (index and middle and (thumb or ring or pinky)):
+            return "手掌张开", 0.87
+
+        # ── OK 👌 ──（此时 ext≥1，至少有一指伸直，不会误判拳）
         d = self._circle_dist(lm)
         # 条件 A：圆圈足够小 + 中指伸直（侧面/正面均可）
         ok_by_circle = d < sz * 0.12 and middle
-        # 条件 B：圆圈很紧（正对摄像头时拇指食指紧贴）+ 至少中指不全弯
+        # 条件 B：圆圈极紧 + 至少中指伸直
         ok_by_tight = d < sz * 0.07 and not ring and not pinky
 
         if ok_by_circle:
-            # 侧面时食指应弯曲，正面时不强求（2D 投影看不清弯曲）
             idx_curve = self._curvature(lm, INDEX_TIP, INDEX_PIP, INDEX_MCP)
             if idx_curve < 0.80:
                 return "OK", 0.93  # 侧面 OK，食指明显弯曲
             return "OK", 0.85      # 正面 OK，食指看起来直
         if ok_by_tight:
-            return "OK", 0.82      # 圆圈极紧，可能是正面 OK
+            return "OK", 0.82
 
         # ── 胜利 ✌️ ──
         if index and middle and not thumb and not ring and not pinky:
             return "胜利", 0.93
-        # 食指中指 + 小指微弯也算
         if index and middle and not thumb and not ring and pinky:
             return "胜利", 0.85
 
@@ -232,21 +244,6 @@ class GestureRecognizer:
         if thumb and not index and not middle and not ring and not pinky:
             if self._thumb_pointing_up(lm, sz):
                 return "点赞", 0.91
-            # 拇指微伸但不竖起 → 拳头（握拳时拇指自然外翘）
-            return "拳头", 0.85
-
-        # ── 手掌张开 ✋ ──
-        if ext >= 5:
-            return "手掌张开", 0.94
-        if ext == 4 and (index and middle and (thumb or ring or pinky)):
-            return "手掌张开", 0.87
-
-        # ── 拳头 ✊ ──
-        if ext == 0:
-            return "拳头", 0.95
-        if ext == 1 and thumb and not self._thumb_pointing_up(lm, sz):
-            return "拳头", 0.90
-        if ext <= 2 and not index and not middle:
             return "拳头", 0.85
 
         # ── 宽松食指：食指直 + 中指弯 ──

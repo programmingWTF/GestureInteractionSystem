@@ -564,6 +564,10 @@ def main():
     # ── 暂停恢复冷却（防重复触发 + 防拉直线） ──
     resume_guard = 0      # > 0 时禁止再次触发 resume
 
+    # ── 双手稳定期（出现新手时等待稳定再响应） ──
+    prev_num_hands = 0
+    hand_settle_guard = 0
+
     # ── 主循环 ──
     while True:
         ok, frame = cap.read()
@@ -607,6 +611,13 @@ def main():
                     draw_hand_landmarks(frame, hand_lms, w, h, color=(80, 220, 60))
                     right_info = recognizer.recognize(hand_lms, handedness)
 
+        # ── 双手数量变化 → 进入稳定期（防止切换时误触发） ──
+        if num_hands != prev_num_hands:
+            hand_settle_guard = 15  # ~0.5s 内不响应手势控制
+            prev_num_hands = num_hands
+        if hand_settle_guard > 0:
+            hand_settle_guard -= 1
+
         # ── 防抖 ──
         left_raw = left_info["gesture"]
         left_stable = left_stabilizer.update(left_raw)
@@ -640,7 +651,7 @@ def main():
             prev = prev_left_gesture if left_lms else prev_right_gesture
 
             # OK 切换
-            if active_cur == "OK" and active_cur != prev and active_info["confidence"] > 0.7:
+            if active_cur == "OK" and active_cur != prev and active_info["confidence"] > 0.7 and hand_settle_guard <= 0:
                 if left_lms:
                     prev_left_gesture = active_cur
                 else:
@@ -657,7 +668,7 @@ def main():
                     print("  👋  单手 · 退出书写")
 
             # 手掌清空
-            if drawing_mode and active_cur == "手掌张开" and active_cur != prev:
+            if drawing_mode and active_cur == "手掌张开" and active_cur != prev and hand_settle_guard <= 0:
                 if left_lms:
                     prev_left_gesture = active_cur
                 else:
@@ -669,7 +680,7 @@ def main():
                 print("  🧹 画布已清空")
 
             # 拳头暂停/继续
-            if drawing_mode and active_cur == "拳头" and active_cur != prev:
+            if drawing_mode and active_cur == "拳头" and active_cur != prev and hand_settle_guard <= 0:
                 if left_lms:
                     prev_left_gesture = active_cur
                 else:
@@ -708,7 +719,7 @@ def main():
             # ── 双手模式 ──
 
             # 左手 OK → 切换书写
-            if left_cur == "OK" and left_cur != prev_left_gesture and left_info["confidence"] > 0.7:
+            if left_cur == "OK" and left_cur != prev_left_gesture and left_info["confidence"] > 0.7 and hand_settle_guard <= 0:
                 prev_left_gesture = left_cur
                 drawing_mode = not drawing_mode
                 if drawing_mode:
@@ -722,7 +733,7 @@ def main():
                     print("  👋  双手 · 退出书写")
 
             # 左手 手掌 → 清空
-            if drawing_mode and left_cur == "手掌张开" and left_cur != prev_left_gesture:
+            if drawing_mode and left_cur == "手掌张开" and left_cur != prev_left_gesture and hand_settle_guard <= 0:
                 prev_left_gesture = left_cur
                 traj_strokes = []
                 traj_current = []
@@ -731,12 +742,12 @@ def main():
                 print("  🧹 画布已清空")
 
             # 左手 拳头 → 暂停/继续
-            if drawing_mode and left_cur == "拳头" and left_cur != prev_left_gesture:
+            if drawing_mode and left_cur == "拳头" and left_cur != prev_left_gesture and hand_settle_guard <= 0:
                 prev_left_gesture = left_cur
                 _toggle_pause()
 
             # 左手 点赞 → 提交并退出
-            if drawing_mode and left_cur == "点赞" and left_cur != prev_left_gesture and left_info["confidence"] > 0.75:
+            if drawing_mode and left_cur == "点赞" and left_cur != prev_left_gesture and left_info["confidence"] > 0.75 and hand_settle_guard <= 0:
                 prev_left_gesture = left_cur
                 _do_submit()
                 drawing_mode = False
