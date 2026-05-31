@@ -497,18 +497,20 @@ def main():
     # ── 辅助函数（闭包，引用 main 的局部变量） ──
 
     def _toggle_pause():
-        nonlocal drawing_paused, traj_current, traj_strokes, traj_result
+        nonlocal drawing_paused, traj_current, traj_strokes, traj_result, right_hand_down, right_cur
         if not drawing_paused:
             if traj_current:
                 traj_strokes.append(traj_current)
                 traj_current = []
             drawing_paused = True
+            right_hand_down = (right_cur != "食指")  # 记录暂停时刻右手是否已收回
             print(f"  ⏸️  笔画 {len(traj_strokes)} 完成，暂停中...")
         else:
             traj_strokes = []
             traj_current = []
             drawing_paused = False
             traj_result = None
+            right_hand_down = False
             print("  🗑️  全部笔画已清空")
 
     def _do_submit():
@@ -628,13 +630,10 @@ def main():
                 active_cur = left_cur
                 active_info = left_info
                 active_lms = left_lms
-                # 面板统一显示左手
-                right_info = left_info
             else:
                 active_cur = right_cur
                 active_info = right_info
                 active_lms = right_lms
-                left_info = right_info
 
             prev = prev_left_gesture if left_lms else prev_right_gesture
 
@@ -679,15 +678,14 @@ def main():
             if drawing_mode and not drawing_paused and active_cur == "食指":
                 _track_index_finger(active_lms)
 
-            # 暂停下继续：右手食指伸出（或用单手的活动手）且冷却到期
+            # 暂停下继续：只用右手食指 + 冷却 + 右手必须收回再伸出
             if drawing_mode and drawing_paused and active_cur == "食指" and active_info["confidence"] > 0.75 and resume_guard <= 0:
-                if left_lms:
-                    prev_left_gesture = active_cur
-                else:
-                    prev_right_gesture = active_cur
-                traj_current = []        # ← 显式清空，防止衔接画直线
+                if not left_lms:
+                    # 只有右手时，单手上也是 index 续画
+                    pass
+                traj_current = []
                 drawing_paused = False
-                resume_guard = 10        # ~0.3s 内不重复触发
+                resume_guard = 10
                 print(f"  ✍️  继续第 {len(traj_strokes) + 1} 笔...")
 
             # 日志
@@ -749,13 +747,14 @@ def main():
             if drawing_mode and not drawing_paused and right_cur == "食指":
                 _track_index_finger(right_lms)
 
-            # 暂停下右手食指 → 继续（不依赖手势变化，用冷却防重复）
-            if drawing_mode and drawing_paused and right_cur == "食指" and right_info["confidence"] > 0.75 and resume_guard <= 0:
+            # 暂停下右手食指 → 继续（必须右手收回再伸出，防止左手松开时误续画）
+            if drawing_mode and drawing_paused and right_cur == "食指" and right_info["confidence"] > 0.75 and right_hand_down and resume_guard <= 0:
                 prev_right_gesture = right_cur
-                traj_current = []         # ← 显式清空，防止衔接画直线
+                traj_current = []
                 drawing_paused = False
-                resume_guard = 10         # ~0.3s 内不重复触发
-                print(f"  ✍️  继续第 {len(traj_strokes) + 1} 笔...")
+                right_hand_down = False
+                resume_guard = 10
+                print(f"  ✍️  右手续画第 {len(traj_strokes) + 1} 笔...")
 
             # 日志
             if left_cur != prev_left_gesture and left_cur not in ("OK", "拳头", "手掌张开", "无手势"):
@@ -773,6 +772,10 @@ def main():
                 prev_left_gesture = None
             if right_cur == "无手势":
                 prev_right_gesture = None
+
+        # ── 暂停中：右手收回即标记可恢复 ──
+        if drawing_paused and right_cur != "食指":
+            right_hand_down = True
 
         # ── resume 冷却自减 ──
         if resume_guard > 0:
