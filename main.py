@@ -500,9 +500,6 @@ def main():
         nonlocal drawing_paused, traj_current, traj_strokes, traj_result
         if not drawing_paused:
             if traj_current:
-                trim = min(10, len(traj_current) // 4)
-                if trim > 0 and len(traj_current) > trim + 3:
-                    traj_current = traj_current[:-trim]
                 traj_strokes.append(traj_current)
                 traj_current = []
             drawing_paused = True
@@ -561,6 +558,9 @@ def main():
         iy = hand_lms[8].y
         if len(traj_current) == 0 or math.dist((ix, iy), traj_current[-1]) > 0.002:
             traj_current.append((ix, iy))
+
+    # ── 暂停恢复冷却（防重复触发 + 防拉直线） ──
+    resume_guard = 0      # > 0 时禁止再次触发 resume
 
     # ── 主循环 ──
     while True:
@@ -679,13 +679,15 @@ def main():
             if drawing_mode and not drawing_paused and active_cur == "食指":
                 _track_index_finger(active_lms)
 
-            # 暂停下食指继续
-            if drawing_mode and drawing_paused and active_cur == "食指" and active_cur != prev and active_info["confidence"] > 0.75:
+            # 暂停下继续：右手食指伸出（或用单手的活动手）且冷却到期
+            if drawing_mode and drawing_paused and active_cur == "食指" and active_info["confidence"] > 0.75 and resume_guard <= 0:
                 if left_lms:
                     prev_left_gesture = active_cur
                 else:
                     prev_right_gesture = active_cur
+                traj_current = []        # ← 显式清空，防止衔接画直线
                 drawing_paused = False
+                resume_guard = 10        # ~0.3s 内不重复触发
                 print(f"  ✍️  继续第 {len(traj_strokes) + 1} 笔...")
 
             # 日志
@@ -747,10 +749,12 @@ def main():
             if drawing_mode and not drawing_paused and right_cur == "食指":
                 _track_index_finger(right_lms)
 
-            # 暂停下右手食指 → 继续
-            if drawing_mode and drawing_paused and right_cur == "食指" and right_cur != prev_right_gesture and right_info["confidence"] > 0.75:
+            # 暂停下右手食指 → 继续（不依赖手势变化，用冷却防重复）
+            if drawing_mode and drawing_paused and right_cur == "食指" and right_info["confidence"] > 0.75 and resume_guard <= 0:
                 prev_right_gesture = right_cur
+                traj_current = []         # ← 显式清空，防止衔接画直线
                 drawing_paused = False
+                resume_guard = 10         # ~0.3s 内不重复触发
                 print(f"  ✍️  继续第 {len(traj_strokes) + 1} 笔...")
 
             # 日志
@@ -769,6 +773,10 @@ def main():
                 prev_left_gesture = None
             if right_cur == "无手势":
                 prev_right_gesture = None
+
+        # ── resume 冷却自减 ──
+        if resume_guard > 0:
+            resume_guard -= 1
 
         # ── 绘制轨迹 ──
         for stroke in traj_strokes:
