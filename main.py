@@ -15,8 +15,6 @@ import time
 import os
 import sys
 import math
-import json
-import subprocess
 import tempfile
 import numpy as np
 import torch
@@ -35,8 +33,11 @@ if _GCN_AVAILABLE:
     sys.path.insert(0, os.path.join(_MODULE_DIR, "GCN"))
     from predictor import GCNPredictor
 
-CNN_PYTHON = sys.executable
-CNN_SCRIPT = os.path.join(_MODULE_DIR, "CNN", "predict_api.py")
+# CNN model (loaded once at startup)
+sys.path.insert(0, os.path.join(_MODULE_DIR, "CNN"))
+from predict_api import EnhancedCNN, preprocess as cnn_preprocess
+CNN_MODEL_PATH = os.path.join(_MODULE_DIR, "CNN", "qmnist_digit_model.pth")
+cnn_model = None   # set in main()
 
 # gesture name mapping (CN→EN for display)
 G_MAP = {
@@ -107,22 +108,21 @@ def predict_cnn(strokes, frame_w, frame_h):
     # preview as BGR numpy for display
     preview = cv2.cvtColor(np.array(img.convert("RGB")), cv2.COLOR_RGB2BGR)
 
-    if not os.path.exists(CNN_SCRIPT):
+    # CNN inference (model loaded once at startup)
+    if cnn_model is None:
         return None, preview, []
 
     try:
-        proc = subprocess.run(
-            [CNN_PYTHON, CNN_SCRIPT, tmp],
-            capture_output=True, text=True, timeout=10,
-            cwd=os.path.dirname(CNN_SCRIPT))
-        if proc.returncode == 0:
-            r = json.loads(proc.stdout.strip())
-            probs = r.get("probs", [])
-            top3 = sorted(enumerate(probs), key=lambda x: -x[1])[:3] if probs else []
-            return r.get("display"), preview, top3
+        device = next(cnn_model.parameters()).device
+        x = cnn_preprocess(tmp).to(device)
+        with torch.no_grad():
+            logits = cnn_model(x)
+            probs = torch.softmax(logits, dim=1).squeeze(0).cpu().numpy()
+        best = int(probs.argmax())
+        top3 = sorted(enumerate(probs), key=lambda x: -x[1])[:3]
+        return str(best), preview, [(d, float(p)) for d, p in top3]
     except Exception:
-        pass
-    return None, preview, []
+        return None, preview, []
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +286,20 @@ def main():
     )
     lmkr = vision.HandLandmarker.create_from_options(opts)
 
+    # CNN model (load once, reuse)
+    global cnn_model
+    if os.path.exists(CNN_MODEL_PATH):
+        try:
+            cnn_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            cnn_model = EnhancedCNN()
+            cnn_model.load_state_dict(torch.load(CNN_MODEL_PATH, map_location="cpu"))
+            cnn_model.to(cnn_device)
+            cnn_model.eval()
+            print("  CNN model loaded")
+        except Exception as e:
+            print(f"  CNN failed: {e}")
+
+    # GCN model
     gcn = None
     if _GCN_AVAILABLE:
         try:
