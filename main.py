@@ -28,7 +28,7 @@ MODEL_PATH = os.path.join(_MODULE_DIR, "hand_landmarker.task")
 
 _GCN_MODEL_PATH = os.path.join(_MODULE_DIR, "GCN", "best_model.pth")
 _GCN_AVAILABLE = os.path.exists(_GCN_MODEL_PATH)
-_GCN_USE_CUDA = False   # ← 改成 False 即强制 CPU 推理
+_GCN_USE_CUDA = True   # ← 改成 False 即强制 CPU 推理
 if _GCN_AVAILABLE:
     sys.path.insert(0, os.path.join(_MODULE_DIR, "GCN"))
     from predictor import GCNPredictor
