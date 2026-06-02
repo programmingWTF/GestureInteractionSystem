@@ -12,9 +12,9 @@ GESTURES = [
     (3,   "victory",        "胜利V"),
     (4,   "ok",             "OK"),
     (5,   "thumbs_up",      "点赞"),
-    (6,   "three_fingers",  "三指 (食+中+无名)"),
-    (7,   "pinch",          "捏合 (拇食指指尖)"),
-    (8,   "four_fingers",   "四指 (除拇指外)"),
+    (6,   "three_fingers",  "三指"),
+    (7,   "pinch",          "捏合"),
+    (8,   "four_fingers",   "四指"),
     (9,   "thumb_down",     "拇指向下"),
 ]
 

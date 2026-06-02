@@ -1,13 +1,6 @@
 """
-GCN 手势识别 — 最终版
-
-在好用的小模型基础上：
-  + 骨骼特征（方向+长度）→ 8维输入
-  + 每轴独立归一化（z不压扁）
-  + 隐层略加宽（160）
-  - 无残差、无JK-Net、无注意力、无FiLM（保持简洁）
-
-参数：~80K，单次推理 <0.15ms
+Hand gesture GCN with bone features and per-axis normalization.
+3-layer GCNConv + LayerNorm + MLP classifier. ~68K parameters.
 """
 
 import math
@@ -17,7 +10,7 @@ import torch.nn.functional as F
 
 
 class GCNConv(nn.Module):
-    """图卷积: H' = D̂^(-1/2) Â D̂^(-1/2) H W"""
+    """Graph convolution: H' = D^(-1/2) A_hat D^(-1/2) H W"""
 
     def __init__(self, in_ch, out_ch, bias=True):
         super().__init__()
@@ -50,14 +43,14 @@ def build_adj_matrix(edges, N=21, normalize=True):
 
 
 def normalize_landmarks(x):
-    """每轴独立归一化：以手腕为原点，各轴除以自身跨度。"""
+    """Per-axis normalization: center on wrist, divide each axis by its span."""
     h = x - x[:, 0:1, :]
     span = h.max(dim=1, keepdim=True)[0] - h.min(dim=1, keepdim=True)[0]
     return h / span.clamp(min=1e-6)
 
 
 def compute_bone_features(x, edges):
-    """骨骼方向(dx,dy,dz)+长度，按目标节点聚合平均。"""
+    """Bone direction (dx,dy,dz) and length, aggregated to target nodes via scatter-mean."""
     B, N, _ = x.shape; dev = x.device
     src = torch.tensor([e[0] for e in edges], device=dev, dtype=torch.long)
     dst = torch.tensor([e[1] for e in edges], device=dev, dtype=torch.long)
@@ -74,24 +67,13 @@ def compute_bone_features(x, edges):
 
 
 class HandGCN(nn.Module):
-    """
-    3 层 GCN + 骨骼特征。
+    """3-layer GCN with bone features.
 
-    ┌────────────────────────────────────┐
-    │ 输入: (B,21,8)  xyz+hand+bone*4  │
-    │  ↓                                │
-    │ GCN(8→160) + LN + ReLU + Drop    │
-    │  ↓                                │
-    │ GCN(160→160) + LN + ReLU + Drop  │
-    │  ↓                                │
-    │ GCN(160→160) + LN + ReLU         │
-    │  ↓                                │
-    │ Global Mean Pool                  │
-    │  ↓                                │
-    │ Linear(160→80) + ReLU + Drop     │
-    │  ↓                                │
-    │ Linear(80→10)                    │
-    └────────────────────────────────────┘
+    Input  (B,21,8)  xyz_norm + handedness + bone*4
+    GCNConv(8->160) + LN + ReLU + Drop
+    GCNConv(160->160) + LN + ReLU + Drop
+    GCNConv(160->160) + LN + ReLU
+    GlobalMeanPool -> Linear(160->80) + ReLU + Drop -> Linear(80->10)
     """
 
     def __init__(self, num_classes=10, hidden_dim=160, dropout=0.3):
@@ -123,19 +105,19 @@ class HandGCN(nn.Module):
     def forward(self, x, adj, handedness):
         B, N, _ = x.shape
 
-        # 归一化 + 骨骼特征
+        # Normalize + bone features
         xn = normalize_landmarks(x)
         bone = compute_bone_features(xn, self._edges) if self._edges else \
                torch.zeros(B, N, 4, device=x.device)
         hl = handedness[:, 1:2].unsqueeze(1).expand(B, N, 1)
         h = torch.cat([xn, hl, bone], dim=-1)
 
-        # 三层 GCN
+        # Three GCN layers
         h = self.conv1(h, adj); h = self.norm1(h); h = F.relu(h); h = self.drop(h)
         h = self.conv2(h, adj); h = self.norm2(h); h = F.relu(h); h = self.drop(h)
         h = self.conv3(h, adj); h = self.norm3(h); h = F.relu(h)
 
-        # 池化 + 分类
+        # Global mean pool + classify
         return self.classifier(h.mean(dim=1))
 
 

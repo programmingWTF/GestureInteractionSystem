@@ -37,7 +37,7 @@ _MODULE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_PATH = os.path.join(_MODULE_DIR, "hand_landmarker.task")
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "DateSet")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-COLLECT_INTERVAL = 0.5
+COLLECT_INTERVAL = 0.2   # 每秒 5 帧（之前 0.5s=2fps）
 
 GESTURES = [
     (0, "open_palm",       "手掌张开"),

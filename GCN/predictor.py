@@ -1,9 +1,5 @@
 """
-GCN 手势预测器 — 轻量推理封装
-
-用法:
-    predictor = GCNPredictor("GCN/best_model.pth")
-    gesture, confidence = predictor.predict(landmarks, handedness)
+Lightweight GCN inference wrapper.
 """
 
 import os
@@ -19,20 +15,18 @@ import numpy as np
 from model import HandGCN, build_adj_matrix
 from dataset_metadata import HAND_EDGES, GESTURES
 
-# 手势名称映射
-IDX_TO_NAME = {g[0]: g[2] for g in GESTURES}   # 0 → "手掌张开"
-IDX_TO_EN   = {g[0]: g[1] for g in GESTURES}   # 0 → "open_palm"
+IDX_TO_NAME = {g[0]: g[2] for g in GESTURES}
+IDX_TO_EN   = {g[0]: g[1] for g in GESTURES}
 
 
 class GCNPredictor:
-    """GCN 手势预测器 — 加载训练好的模型，对单帧关键点做推理。"""
+    """GCN gesture predictor: loads a trained model and runs per-frame inference."""
 
     def __init__(self, model_path: str, device: str = None,
                  ema_alpha: float = 0.75):
         """
         Args:
-            ema_alpha: 时序平滑系数。0=只看历史, 1=只看当前帧。
-                       0.6 表示 60% 当前帧 + 40% 历史累积。
+            ema_alpha: Temporal smoothing coefficient.
         """
         if device is None:
             self.device = torch.device(
@@ -41,17 +35,17 @@ class GCNPredictor:
         else:
             self.device = torch.device(device)
 
-        # 构建邻接矩阵
+
         self.adj = build_adj_matrix(HAND_EDGES, 21).to(self.device)
 
-        # 创建模型 & 加载权重
+
         self.model = HandGCN(num_classes=len(GESTURES)).to(self.device)
-        self.model.set_edges(HAND_EDGES)   # ← 之前漏了！骨骼特征一直是零
+        self.model.set_edges(HAND_EDGES)
         checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.model.eval()
 
-        # 时序平滑 — 为每只手腕维护一个 EMA 概率向量
+        # Per-hand EMA probability vectors
         self.ema_alpha = ema_alpha
         self._ema_probs = {}   # hand_id → np.array(10,)
 
@@ -60,7 +54,7 @@ class GCNPredictor:
               f"(val_acc={acc:.1%}, ema={ema_alpha}, device={self.device})")
 
     def _predict_raw(self, landmarks, handedness: str):
-        """单帧原始推理（不做平滑）。"""
+        """Raw single-frame inference (no smoothing)."""
         coords = np.zeros((21, 3), dtype=np.float32)
         for i, lm in enumerate(landmarks):
             coords[i, 0] = lm.x
@@ -80,24 +74,22 @@ class GCNPredictor:
     def predict(self, landmarks, handedness: str,
                 hand_id: str = None):
         """
-        对单帧手部关键点做预测（含时序平滑）。
+        Predict gesture with EMA temporal smoothing.
 
-        对每只手腕维护一个 EMA 概率向量：
-            p_smooth = α * p_current + (1-α) * p_history
-
-        这样相邻帧之间不会因为噪声导致手势反复跳变。
+        Maintains per-hand EMA of probability vector:
+            p_smooth = alpha * p_current + (1-alpha) * p_history
 
         Args:
-            landmarks:  MediaPipe 的 21 个 NormalizedLandmark 列表
-            handedness: "Left" 或 "Right"
-            hand_id:    手部唯一标识，用于区分左右手的平滑状态。
-                        传 None 时退化为单帧预测（不跨帧平滑）。
+            landmarks:  21 MediaPipe NormalizedLandmark objects
+            handedness: "Left" or "Right"
+            hand_id:    Per-hand identifier for smoothing state.
+                        Pass None for frame-independent prediction.
         Returns:
-            (gesture_name_cn: str, confidence: float, probs: list)
+            (gesture_name, confidence, probability_distribution)
         """
         probs_raw = self._predict_raw(landmarks, handedness)
 
-        # 时序平滑
+
         hid = hand_id
         if hid is not None:
             if hid in self._ema_probs:
@@ -115,7 +107,7 @@ class GCNPredictor:
 
     def predict_top_k(self, landmarks, handedness: str,
                       hand_id: str = None, k: int = 3):
-        """返回 top-k 预测结果。"""
+        """Return top-k predictions."""
         name, conf, probs = self.predict(landmarks, handedness, hand_id=hand_id)
         ranked = sorted(enumerate(probs), key=lambda x: -x[1])[:k]
         return [(IDX_TO_NAME.get(i, "?"), p) for i, p in ranked]

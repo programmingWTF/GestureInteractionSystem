@@ -1,10 +1,6 @@
 """
-GCN 手势识别 — 训练脚本 v2.5
-
-稳定训练：无数据增强 + ReduceLROnPlateau + 标签平滑
-
-用法:
-    python GCN/train.py
+GCN gesture recognition training script.
+Usage: python GCN/train.py
 """
 
 import os
@@ -27,7 +23,7 @@ from model import build_adj_matrix, create_model
 
 CONFIG = {
     "batch_size": 64,
-    "epochs": 40000,
+    "epochs": 400,
     "lr": 2e-3,
     "weight_decay": 1e-5,
     "dropout": 0.35,
@@ -120,7 +116,6 @@ def main():
     device = get_device()
     print()
 
-    # 数据
     samples = load_all_data()
     print_data_stats(samples)
     if len(samples) < 20:
@@ -132,16 +127,14 @@ def main():
     val_loader = DataLoader(val_set, CONFIG["batch_size"], shuffle=False,
                             num_workers=CONFIG["num_workers"])
 
-    # 模型
     adj = build_adj_matrix(HAND_EDGES, NUM_LANDMARKS).to(device)
     model = create_model(device, NUM_CLASSES)
     print(f"  参数量: {sum(p.numel() for p in model.parameters()):,}")
 
-    # 优化
     criterion = nn.CrossEntropyLoss(label_smoothing=CONFIG["label_smoothing"])
     optimizer = torch.optim.AdamW(model.parameters(), lr=CONFIG["lr"],
                                   weight_decay=CONFIG["weight_decay"])
-    # 余弦退火 + warmup（按 step 更新）
+    # Cosine annealing with linear warmup (per-step)
     warmup_steps = CONFIG["warmup_epochs"] * len(train_loader)
     total_steps = CONFIG["epochs"] * len(train_loader)
 
@@ -154,7 +147,7 @@ def main():
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_fn)
     global_step = 0
 
-    # 训练
+
     print("\n" + "=" * 55 + "\n  开始训练\n" + "=" * 55)
     hdr = f"  {'Ep':>4s}  {'Train Loss':>10s}  {'Train Acc':>9s}  {'Val Loss':>8s}  {'Val Acc':>7s}  {'LR':>8s}  {'Time':>5s}"
     print(hdr + "\n  " + "─" * 62)
@@ -191,7 +184,6 @@ def main():
     print(f"\n  ✅ 完成: {time.time()-t0:.0f}s | 最佳: {best_acc:.2%} @ ep{best_ep}")
     plot_curves(history, os.path.join(OUTPUT_DIR, "training_curves.png"))
 
-    # 评估
     ckpt = torch.load(best_path, map_location=device, weights_only=False)
     model.load_state_dict(ckpt["model_state_dict"])
     _, final_acc, _ = validate(model, val_loader, criterion, adj, device)
