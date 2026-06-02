@@ -105,34 +105,31 @@ def load_all_data(data_root: str = None) -> list:
 
 def get_train_val_split(samples: list, val_ratio: float = 0.2, seed: int = 42):
     """
-    按类别分层划分训练集和验证集。
+    按类别**时序**划分训练集和验证集。
 
-    Returns:
-        train_dataset, val_dataset
+    数据是按采集顺序排列的（同一会话中相邻帧高度相似）。
+    随机划分会导致几乎相同的帧同时出现在训练集和验证集（数据泄漏），
+    造成验证准确率虚高但真实场景表现差。
+
+    改为时序划分：每类前 80% 帧用于训练，后 20% 用于验证。
+    验证集来自采集会话的末期，手的姿态/角度已有漂移，更接近真实泛化场景。
     """
-    from sklearn.model_selection import train_test_split
-
-    # 分组
-    by_class = {i: [] for i in range(NUM_CLASSES)}
-    for s in samples:
-        by_class[s[2]].append(s)
-
     train_samples = []
     val_samples = []
 
     for c in range(NUM_CLASSES):
-        if len(by_class[c]) == 0:
+        # 同类数据按 CSV 中原始顺序（已按时序排列）
+        class_samples = [s for s in samples if s[2] == c]
+        if len(class_samples) == 0:
             continue
-        c_train, c_val = train_test_split(
-            by_class[c], test_size=val_ratio, random_state=seed,
-        )
-        train_samples.extend(c_train)
-        val_samples.extend(c_val)
 
-    # 打乱
+        n_val = max(1, int(len(class_samples) * val_ratio))
+        train_samples.extend(class_samples[:-n_val])       # 前 80%
+        val_samples.extend(class_samples[-n_val:])         # 后 20%（末期）
+
+    # 打乱训练集（验证集保持时序，不洗牌）
     rng = np.random.RandomState(seed)
     rng.shuffle(train_samples)
-    rng.shuffle(val_samples)
 
     return HandGestureDataset(train_samples), HandGestureDataset(val_samples)
 

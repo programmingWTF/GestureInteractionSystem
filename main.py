@@ -39,6 +39,13 @@ CAMERA_ID = 0
 _MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(_MODULE_DIR, "hand_landmarker.task")
 
+# GCN 模型（可选）
+_GCN_MODEL_PATH = os.path.join(_MODULE_DIR, "GCN", "best_model.pth")
+_GCN_AVAILABLE = os.path.exists(_GCN_MODEL_PATH)
+if _GCN_AVAILABLE:
+    sys.path.insert(0, os.path.join(_MODULE_DIR, "GCN"))
+    from predictor import GCNPredictor
+
 CNN_PYTHON = sys.executable
 CNN_SCRIPT = os.path.join(_MODULE_DIR, "cnn", "predict_api.py")
 
@@ -280,13 +287,18 @@ def draw_side_panel(img, hands_info, fps, extra=None):
 
     # ── 左手信息 ──
     left = hands_info.get("left")
-    if left and left["gesture"] != "无手势":
-        d.text((X0, y), "🟦 左手 (控制)", font=_load_font(16), fill=(100, 180, 255))
+    if left and left.get("gesture", "无手势") != "无手势":
+        d.text((X0, y), "🟦 左手", font=_load_font(16), fill=(100, 180, 255))
         y += 22
-        d.text((X0 + 5, y), left["gesture"], font=_FONT_MID, fill=(120, 200, 255))
-        y += 28
-        d.text((X0 + 5, y), left["action"], font=_FONT_XS, fill=(200, 200, 200))
-        y += 20
+        d.text((X0 + 5, y), f"规则: {left['gesture']}", font=_FONT_XS, fill=(120, 200, 255))
+        y += 18
+        if left.get("gcn_gesture"):
+            gcn_cn = left["gcn_gesture"]
+            gcn_conf = left.get("gcn_confidence", 0)
+            gcn_color = (100, 255, 180) if gcn_conf > 0.6 else (255, 255, 100) if gcn_conf > 0.3 else (255, 150, 100)
+            d.text((X0 + 5, y), f"GCN: {gcn_cn} ({gcn_conf:.0%})",
+                   font=_FONT_XS, fill=gcn_color)
+            y += 18
     else:
         d.text((X0, y), "🟦 左手 —", font=_load_font(16), fill=(100, 100, 100))
         y += 22
@@ -297,13 +309,18 @@ def draw_side_panel(img, hands_info, fps, extra=None):
 
     # ── 右手信息 ──
     right = hands_info.get("right")
-    if right and right["gesture"] != "无手势":
-        d.text((X0, y), "🟩 右手 (书写)", font=_load_font(16), fill=(100, 255, 150))
+    if right and right.get("gesture", "无手势") != "无手势":
+        d.text((X0, y), "🟩 右手", font=_load_font(16), fill=(100, 255, 150))
         y += 22
-        d.text((X0 + 5, y), right["gesture"], font=_FONT_MID, fill=(120, 255, 160))
-        y += 28
-        d.text((X0 + 5, y), right["action"], font=_FONT_XS, fill=(200, 200, 200))
-        y += 20
+        d.text((X0 + 5, y), f"规则: {right['gesture']}", font=_FONT_XS, fill=(120, 255, 160))
+        y += 18
+        if right.get("gcn_gesture"):
+            gcn_cn = right["gcn_gesture"]
+            gcn_conf = right.get("gcn_confidence", 0)
+            gcn_color = (100, 255, 180) if gcn_conf > 0.6 else (255, 255, 100) if gcn_conf > 0.3 else (255, 150, 100)
+            d.text((X0 + 5, y), f"GCN: {gcn_cn} ({gcn_conf:.0%})",
+                   font=_FONT_XS, fill=gcn_color)
+            y += 18
     else:
         d.text((X0, y), "🟩 右手 —", font=_load_font(16), fill=(100, 100, 100))
         y += 22
@@ -462,6 +479,14 @@ def main():
     right_stabilizer = GestureStabilizer(window_size=12, min_ratio=0.55, lock_frames=5)
     fps_counter = FPS()
 
+    # ── GCN 模型 ──
+    gcn_predictor = None
+    if _GCN_AVAILABLE:
+        try:
+            gcn_predictor = GCNPredictor(_GCN_MODEL_PATH)
+        except Exception as e:
+            print(f"  ⚠️ GCN 模型加载失败: {e}")
+
     print("\n  系统就绪！ 🦞")
     print("  ─────────────────────────────")
     print("  🖐️  双手模式：")
@@ -473,6 +498,8 @@ def main():
         print(f"  CNN 模型: 已检测到 ✅")
     else:
         print(f"  CNN 模型: 未找到 ❌ (回退 $1 识别器)")
+    if gcn_predictor:
+        print(f"  GCN 模型: 已加载 ✅ (10 类手势)")
     print("  ─────────────────────────────\n")
 
     window = "GestureInteractionSystem"
@@ -606,10 +633,22 @@ def main():
                     left_lms = hand_lms
                     draw_hand_landmarks(frame, hand_lms, w, h, color=(220, 100, 50))
                     left_info = recognizer.recognize(hand_lms, handedness)
+                    # GCN 预测（hand_id="left" 用于跨帧 EMA 平滑）
+                    if gcn_predictor:
+                        gcn_name, gcn_conf, gcn_probs = gcn_predictor.predict(hand_lms, handedness, hand_id="left")
+                        left_info["gcn_gesture"] = gcn_name
+                        left_info["gcn_confidence"] = gcn_conf
+                        left_info["gcn_probs"] = gcn_probs
                 else:
                     right_lms = hand_lms
                     draw_hand_landmarks(frame, hand_lms, w, h, color=(80, 220, 60))
                     right_info = recognizer.recognize(hand_lms, handedness)
+                    # GCN 预测（hand_id="right" 用于跨帧 EMA 平滑）
+                    if gcn_predictor:
+                        gcn_name, gcn_conf, gcn_probs = gcn_predictor.predict(hand_lms, handedness, hand_id="right")
+                        right_info["gcn_gesture"] = gcn_name
+                        right_info["gcn_confidence"] = gcn_conf
+                        right_info["gcn_probs"] = gcn_probs
 
         # ── 双手数量变化 → 进入稳定期（防止切换时误触发） ──
         if num_hands != prev_num_hands:

@@ -1,14 +1,10 @@
 """
-GCN 手势识别 — 训练脚本
+GCN 手势识别 — 训练脚本 v2.5
 
-自动检测 CUDA，有 GPU 则用 GPU，无则 CPU。
+稳定训练：无数据增强 + ReduceLROnPlateau + 标签平滑
 
 用法:
     python GCN/train.py
-
-输出:
-    GCN/best_model.pth    最佳模型权重
-    GCN/training_curves.png  训练曲线图
 """
 
 import os
@@ -21,337 +17,197 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from sklearn.metrics import confusion_matrix, classification_report
 
-# 将 GCN 目录加入 path，确保可以引用同目录模块
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 
 from dataset_metadata import GESTURES, NUM_CLASSES, HAND_EDGES, NUM_LANDMARKS
 from dataset import load_all_data, get_train_val_split, print_data_stats
-from model import HandGCN, build_adj_matrix, create_model
-
-
-# ══════════════════════════════════════════════════════════
-# 配置
-# ══════════════════════════════════════════════════════════
+from model import build_adj_matrix, create_model
 
 CONFIG = {
     "batch_size": 64,
-    "epochs": 200,
-    "lr": 1e-3,
-    "weight_decay": 1e-4,
-    "hidden_dims": (64, 128, 256, 256, 128, 64),
+    "epochs": 40000,
+    "lr": 2e-3,
+    "weight_decay": 1e-5,
     "dropout": 0.35,
     "val_ratio": 0.2,
-    "patience": 30,           # early stop
-    "lr_patience": 15,        # ReduceLROnPlateau 耐心
-    "lr_factor": 0.5,
+    "patience": 50,
+    "warmup_epochs": 5,
+    "label_smoothing": 0.05,
     "num_workers": 0,
 }
-
 OUTPUT_DIR = _THIS_DIR
 
 
-# ══════════════════════════════════════════════════════════
-# 工具函数
-# ══════════════════════════════════════════════════════════
-
 def get_device():
-    """检测可用设备。"""
     if torch.cuda.is_available():
-        device = torch.device("cuda")
-        print(f"  ✓ CUDA 可用: {torch.cuda.get_device_name(0)}")
-    else:
-        device = torch.device("cpu")
-        print(f"  ✓ 使用 CPU 训练")
-    return device
+        print(f"  ✓ CUDA: {torch.cuda.get_device_name(0)}")
+        return torch.device("cuda")
+    print("  ✓ CPU")
+    return torch.device("cpu")
 
 
 def train_epoch(model, loader, optimizer, criterion, adj, device):
-    """单个训练 epoch。"""
     model.train()
-    total_loss = 0.0
-    correct = 0
-    total = 0
-
+    total_loss, correct, total = 0.0, 0, 0
     for landmarks, hand_vec, labels in loader:
-        landmarks = landmarks.to(device)     # (B, 21, 3)
-        hand_vec = hand_vec.to(device)       # (B, 2)
+        landmarks = landmarks.to(device)
+        hand_vec = hand_vec.to(device)
         labels = labels.to(device)
-
         optimizer.zero_grad()
         logits = model(landmarks, adj, hand_vec)
         loss = criterion(logits, labels)
         loss.backward()
         optimizer.step()
-
         total_loss += loss.item() * landmarks.size(0)
-        preds = logits.argmax(dim=1)
-        correct += (preds == labels).sum().item()
+        correct += (logits.argmax(1) == labels).sum().item()
         total += labels.size(0)
-
     return total_loss / total, correct / total
 
 
 @torch.no_grad()
 def validate(model, loader, criterion, adj, device):
-    """验证。"""
     model.eval()
-    total_loss = 0.0
-    correct = 0
-    total = 0
-    all_preds = []
-    all_labels = []
-
+    total_loss, correct, total = 0.0, 0, 0
+    all_preds, all_labels = [], []
     for landmarks, hand_vec, labels in loader:
         landmarks = landmarks.to(device)
         hand_vec = hand_vec.to(device)
         labels = labels.to(device)
-
         logits = model(landmarks, adj, hand_vec)
         loss = criterion(logits, labels)
-
         total_loss += loss.item() * landmarks.size(0)
-        preds = logits.argmax(dim=1)
+        preds = logits.argmax(1)
         correct += (preds == labels).sum().item()
         total += labels.size(0)
-
         all_preds.extend(preds.cpu().tolist())
         all_labels.extend(labels.cpu().tolist())
-
     acc = correct / total
     cm = confusion_matrix(all_labels, all_preds, labels=list(range(NUM_CLASSES)))
     return total_loss / total, acc, cm
 
 
-def plot_curves(history, save_path):
-    """绘制训练曲线并保存。"""
+def plot_curves(history, path):
     try:
-        import matplotlib
-        matplotlib.use("Agg")
+        import matplotlib; matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-
         fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-
-        # Loss
-        ax = axes[0]
-        ax.plot(history["train_loss"], label="Train Loss", color="#2196F3")
-        ax.plot(history["val_loss"], label="Val Loss", color="#FF5722")
-        ax.set_xlabel("Epoch")
-        ax.set_ylabel("Loss")
-        ax.set_title("Training & Validation Loss")
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-
-        # Accuracy
-        ax = axes[1]
-        ax.plot(history["train_acc"], label="Train Acc", color="#2196F3")
-        ax.plot(history["val_acc"], label="Val Acc", color="#FF5722")
-        ax.set_xlabel("Epoch")
-        ax.set_ylabel("Accuracy")
-        ax.set_title("Training & Validation Accuracy")
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-
-        # 标注最佳
-        best_epoch = np.argmax(history["val_acc"])
-        best_acc = history["val_acc"][best_epoch]
-        ax.annotate(f"Best: {best_acc*100:.1f}% @ ep{best_epoch+1}",
-                    xy=(best_epoch, best_acc),
-                    xytext=(best_epoch + 5, best_acc - 0.05),
-                    arrowprops=dict(arrowstyle="->", color="green"),
-                    fontsize=10, color="green")
-
-        plt.tight_layout()
-        plt.savefig(save_path, dpi=120, bbox_inches="tight")
-        plt.close()
-        print(f"  📈 训练曲线已保存: {save_path}")
+        axes[0].plot(history["train_loss"], label="Train", color="#2196F3")
+        axes[0].plot(history["val_loss"], label="Val", color="#FF5722")
+        axes[0].set_xlabel("Epoch"); axes[0].set_ylabel("Loss")
+        axes[0].legend(); axes[0].grid(True, alpha=0.3)
+        axes[1].plot(history["train_acc"], label="Train", color="#2196F3")
+        axes[1].plot(history["val_acc"], label="Val", color="#FF5722")
+        axes[1].set_xlabel("Epoch"); axes[1].set_ylabel("Accuracy")
+        axes[1].legend(); axes[1].grid(True, alpha=0.3)
+        best = int(np.argmax(history["val_acc"]))
+        ba = history["val_acc"][best]
+        axes[1].annotate(f"Best: {ba*100:.1f}% @ ep{best+1}",
+                         xy=(best, ba), xytext=(best+8, ba-0.06),
+                         arrowprops=dict(arrowstyle="->", color="green"),
+                         fontsize=10, color="green")
+        plt.tight_layout(); plt.savefig(path, dpi=120, bbox_inches="tight"); plt.close()
+        print(f"  📈 {path}")
     except ImportError:
-        print("  [WARN] matplotlib 未安装，跳过曲线绘制")
+        pass
 
-
-# ══════════════════════════════════════════════════════════
-# 主函数
-# ══════════════════════════════════════════════════════════
 
 def main():
     print("=" * 55)
-    print("  GCN 手势识别 — 模型训练")
+    print("  GCN 手势识别 — 训练 v2.5")
     print("=" * 55)
-
-    # ── 设备 ──
     device = get_device()
     print()
 
-    # ── 加载数据 ──
-    print("  加载数据...")
+    # 数据
     samples = load_all_data()
     print_data_stats(samples)
-
     if len(samples) < 20:
-        print("\n  ❌ 数据量太少（<20 帧），无法训练。")
-        print("  请先运行 GCN/collect_data.py 采集数据。")
-        print("  建议每类手势至少采集 100 帧以上。")
-        return
+        print("  ❌ 数据不足"); return
+    train_set, val_set = get_train_val_split(samples, CONFIG["val_ratio"])
+    print(f"\n  训练: {len(train_set)}  验证: {len(val_set)}")
+    train_loader = DataLoader(train_set, CONFIG["batch_size"], shuffle=True,
+                              num_workers=CONFIG["num_workers"], drop_last=True)
+    val_loader = DataLoader(val_set, CONFIG["batch_size"], shuffle=False,
+                            num_workers=CONFIG["num_workers"])
 
-    # ── 划分数据集 ──
-    train_set, val_set = get_train_val_split(samples, val_ratio=CONFIG["val_ratio"])
-    print(f"\n  训练集: {len(train_set)} 帧 | 验证集: {len(val_set)} 帧")
+    # 模型
+    adj = build_adj_matrix(HAND_EDGES, NUM_LANDMARKS).to(device)
+    model = create_model(device, NUM_CLASSES)
+    print(f"  参数量: {sum(p.numel() for p in model.parameters()):,}")
 
-    train_loader = DataLoader(
-        train_set, batch_size=CONFIG["batch_size"], shuffle=True,
-        num_workers=CONFIG["num_workers"], drop_last=True,
-    )
-    val_loader = DataLoader(
-        val_set, batch_size=CONFIG["batch_size"], shuffle=False,
-        num_workers=CONFIG["num_workers"],
-    )
+    # 优化
+    criterion = nn.CrossEntropyLoss(label_smoothing=CONFIG["label_smoothing"])
+    optimizer = torch.optim.AdamW(model.parameters(), lr=CONFIG["lr"],
+                                  weight_decay=CONFIG["weight_decay"])
+    # 余弦退火 + warmup（按 step 更新）
+    warmup_steps = CONFIG["warmup_epochs"] * len(train_loader)
+    total_steps = CONFIG["epochs"] * len(train_loader)
 
-    # ── 构建邻接矩阵 ──
-    adj = build_adj_matrix(HAND_EDGES, num_nodes=NUM_LANDMARKS).to(device)
-    print(f"  邻接矩阵: {adj.shape}  (21 节点, {len(HAND_EDGES)} 条边)")
+    def lr_fn(step):
+        if step < warmup_steps:
+            return step / max(1, warmup_steps)
+        progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+        return 0.5 * (1 + math.cos(math.pi * progress))
 
-    # ── 模型 ──
-    model = create_model(
-        device,
-        num_classes=NUM_CLASSES,
-        hidden_dims=CONFIG["hidden_dims"],
-        dropout=CONFIG["dropout"],
-    )
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_fn)
+    global_step = 0
 
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"  参数量: {trainable_params:,} (总计 {total_params:,})")
-
-    # ── 损失 & 优化器 & 调度器 ──
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=CONFIG["lr"],
-        weight_decay=CONFIG["weight_decay"],
-    )
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", factor=CONFIG["lr_factor"],
-        patience=CONFIG["lr_patience"],
-    )
-
-    # ── 训练循环 ──
-    print("\n" + "=" * 55)
-    print("  开始训练")
-    print("=" * 55)
-    print(f"  {'Epoch':>6s}  {'Train Loss':>11s}  {'Train Acc':>10s}"
-          f"  {'Val Loss':>9s}  {'Val Acc':>8s}  {'LR':>10s}  {'Time':>7s}")
-    print("  " + "─" * 70)
-
+    # 训练
+    print("\n" + "=" * 55 + "\n  开始训练\n" + "=" * 55)
+    hdr = f"  {'Ep':>4s}  {'Train Loss':>10s}  {'Train Acc':>9s}  {'Val Loss':>8s}  {'Val Acc':>7s}  {'LR':>8s}  {'Time':>5s}"
+    print(hdr + "\n  " + "─" * 62)
     history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
-    best_val_acc = 0.0
-    best_epoch = 0
-    best_model_path = os.path.join(OUTPUT_DIR, "best_model.pth")
-    patience_counter = 0
-    t_start = time.time()
+    best_acc, best_ep, patience_ctr = 0.0, 0, 0
+    best_path = os.path.join(OUTPUT_DIR, "best_model.pth")
+    t0 = time.time()
 
-    for epoch in range(1, CONFIG["epochs"] + 1):
+    for ep in range(1, CONFIG["epochs"] + 1):
         t_ep = time.time()
+        tl, ta = train_epoch(model, train_loader, optimizer, criterion, adj, device)
+        vl, va, _ = validate(model, val_loader, criterion, adj, device)
+        # step-based cosine annealing
+        for _ in range(len(train_loader)):
+            global_step += 1
+            scheduler.step()
+        lr = optimizer.param_groups[0]["lr"]
 
-        train_loss, train_acc = train_epoch(
-            model, train_loader, optimizer, criterion, adj, device,
-        )
-        val_loss, val_acc, val_cm = validate(
-            model, val_loader, criterion, adj, device,
-        )
+        history["train_loss"].append(tl); history["train_acc"].append(ta)
+        history["val_loss"].append(vl); history["val_acc"].append(va)
 
-        # 记录
-        history["train_loss"].append(train_loss)
-        history["train_acc"].append(train_acc)
-        history["val_loss"].append(val_loss)
-        history["val_acc"].append(val_acc)
-
-        # 学习率调度
-        current_lr = optimizer.param_groups[0]["lr"]
-        scheduler.step(val_loss)
-
-        elapsed = time.time() - t_ep
-
-        # 打印
-        print(f"  {epoch:>5d}   {train_loss:>10.4f}  {train_acc:>9.2%}"
-              f"  {val_loss:>8.4f}  {val_acc:>7.2%}"
-              f"  {current_lr:>9.2e}  {elapsed:>5.1f}s")
-
-        # 保存最佳模型
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            best_epoch = epoch
-            patience_counter = 0
-            torch.save({
-                "epoch": epoch,
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "val_acc": val_acc,
-                "val_loss": val_loss,
-                "config": CONFIG,
-                "adj": adj.cpu(),
-            }, best_model_path)
-            print(f"         ↑ 最佳模型已保存 (val_acc={val_acc:.2%})")
+        print(f"  {ep:>4d}  {tl:>10.4f}  {ta:>8.2%}  {vl:>8.4f}  {va:>7.2%}  {lr:>7.1e}  {time.time()-t_ep:>4.1f}s")
+        if va > best_acc:
+            best_acc, best_ep, patience_ctr = va, ep, 0
+            torch.save({"epoch": ep, "model_state_dict": model.state_dict(),
+                        "val_acc": va, "config": CONFIG}, best_path)
+            print(f"         ↑ best ({va:.2%})")
         else:
-            patience_counter += 1
-
-        # Early stop
-        if patience_counter >= CONFIG["patience"]:
-            print(f"\n  ⏹ Early stop @ epoch {epoch}（{CONFIG['patience']} epochs 无提升）")
+            patience_ctr += 1
+        if patience_ctr >= CONFIG["patience"]:
+            print(f"\n  ⏹ Early stop @ {ep}")
             break
 
-    total_time = time.time() - t_start
-    print("\n" + "=" * 55)
-    print(f"  训练完成！总耗时: {total_time:.0f}s ({total_time/60:.1f}min)")
-    print(f"  最佳验证准确率: {best_val_acc:.2%} (epoch {best_epoch})")
-    print(f"  模型已保存: {best_model_path}")
-    print("=" * 55)
+    print(f"\n  ✅ 完成: {time.time()-t0:.0f}s | 最佳: {best_acc:.2%} @ ep{best_ep}")
+    plot_curves(history, os.path.join(OUTPUT_DIR, "training_curves.png"))
 
-    # ── 绘制曲线 ──
-    curve_path = os.path.join(OUTPUT_DIR, "training_curves.png")
-    plot_curves(history, curve_path)
+    # 评估
+    ckpt = torch.load(best_path, map_location=device, weights_only=False)
+    model.load_state_dict(ckpt["model_state_dict"])
+    _, final_acc, _ = validate(model, val_loader, criterion, adj, device)
 
-    # ── 最终评估 ──
-    print("\n  加载最佳模型进行最终评估...")
-    checkpoint = torch.load(best_model_path, map_location=device)
-    model.load_state_dict(checkpoint["model_state_dict"])
-    _, final_acc, final_cm = validate(model, val_loader, criterion, adj, device)
-
-    gesture_names = [g[2] for g in GESTURES]
-
-    print(f"\n  最终验证准确率: {final_acc:.2%}")
-
-    # 基于验证集重新收集预测
-    model.eval()
-    all_preds = []
-    all_labels = []
+    model.eval(); all_preds, all_labels = [], []
     with torch.no_grad():
         for landmarks, hand_vec, labels in val_loader:
-            landmarks = landmarks.to(device)
-            hand_vec = hand_vec.to(device)
-            logits = model(landmarks, adj, hand_vec)
-            all_preds.extend(logits.argmax(dim=1).cpu().tolist())
+            logits = model(landmarks.to(device), adj, hand_vec.to(device))
+            all_preds.extend(logits.argmax(1).cpu().tolist())
             all_labels.extend(labels.tolist())
 
+    print(f"\n  最终准确率: {final_acc:.2%}")
     if len(set(all_labels)) > 1:
-        print("\n  分类报告 (验证集实际预测):")
-        print(classification_report(
-            all_labels, all_preds,
-            target_names=gesture_names,
-            zero_division=0,
-        ))
-
-    # 混淆矩阵
-    print("\n  混淆矩阵:")
-    cm = confusion_matrix(all_labels, all_preds, labels=list(range(NUM_CLASSES)))
-    header = "        " + "".join(f"{g[2][:4]:>6s}" for g in GESTURES)
-    print(header)
-    for i, g in enumerate(GESTURES):
-        row = "".join(f"{cm[i, j]:>6d}" if i != j else f"\033[92m{cm[i, j]:>6d}\033[0m"
-                     for j in range(NUM_CLASSES))
-        print(f"  {g[2]:<6s}{row}")
-
-    print(f"\n  ✅ 模型就绪: {best_model_path}")
+        print("\n  分类报告:")
+        print(classification_report(all_labels, all_preds,
+              target_names=[g[2] for g in GESTURES], zero_division=0))
 
 
 if __name__ == "__main__":
