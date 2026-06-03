@@ -23,13 +23,13 @@ from dataset import load_all_data, get_train_val_split, print_data_stats
 from model import build_adj_matrix, create_model
 
 CONFIG = {
-    "batch_size": 64,
+    "batch_size": 128,
     "epochs": 400,
     "lr": 2e-3,
     "weight_decay": 1e-5,
     "dropout": 0.35,
     "val_ratio": 0.2,
-    "patience": 50,
+    "patience": 60,
     "warmup_epochs": 5,
     "label_smoothing": 0.05,
     "num_workers": 0,
@@ -45,12 +45,42 @@ def get_device():
     return torch.device("cpu")
 
 
+def augment_landmarks(x):
+    """训练时数据增强：绕z轴旋转±8° + 高斯噪声 + 随机缩放±5%。
+    所有变换以手腕为中心，保持手势语义不变。"""
+    B, N, _ = x.shape
+    device = x.device
+
+    # 以手腕为中心
+    wrist = x[:, 0:1, :]
+    x = x - wrist
+
+    # 旋转（z轴 = 画面内旋转）
+    angle = (torch.rand(B, device=device) * 2 - 1) * 0.087  # ±5°
+    cos_a, sin_a = torch.cos(angle).view(B, 1), torch.sin(angle).view(B, 1)
+    xr = torch.zeros_like(x)
+    xr[..., 0] = x[..., 0] * cos_a - x[..., 1] * sin_a
+    xr[..., 1] = x[..., 0] * sin_a + x[..., 1] * cos_a
+    xr[..., 2] = x[..., 2]
+
+    # 缩放
+    scale = 1.0 + (torch.rand(B, device=device) * 2 - 1) * 0.03
+    xr = xr * scale.view(B, 1, 1)
+
+    # 噪声
+    noise = torch.randn_like(xr) * 0.004
+    xr = xr + noise
+
+    return xr + wrist
+
+
 def train_epoch(model, loader, optimizer, criterion, adj, device, epoch, total_epochs):
     model.train()
     total_loss, correct, total = 0.0, 0, 0
     pbar = tqdm(loader, desc=f"Train {epoch}/{total_epochs}", unit="batch", leave=False)
     for landmarks, hand_vec, labels in pbar:
         landmarks = landmarks.to(device)
+        landmarks = augment_landmarks(landmarks)
         hand_vec = hand_vec.to(device)
         labels = labels.to(device)
         optimizer.zero_grad()

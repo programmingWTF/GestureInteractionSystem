@@ -1,6 +1,6 @@
 """
 Hand gesture GCN with bone features and per-axis normalization.
-3-layer GCNConv + LayerNorm + MLP classifier. ~68K parameters.
+4-layer GCNConv + LayerNorm + MLP classifier. ~210K parameters.
 """
 
 import math
@@ -67,16 +67,17 @@ def compute_bone_features(x, edges):
 
 
 class HandGCN(nn.Module):
-    """3-layer GCN with bone features.
+    """4-layer GCN with bone features.
 
     Input  (B,21,8)  xyz_norm + handedness + bone*4
-    GCNConv(8->160) + LN + ReLU + Drop
-    GCNConv(160->160) + LN + ReLU + Drop
-    GCNConv(160->160) + LN + ReLU
-    GlobalMeanPool -> Linear(160->80) + ReLU + Drop -> Linear(80->10)
+    GCNConv(8->256) + LN + ReLU + Drop
+    GCNConv(256->256) + LN + ReLU + Drop
+    GCNConv(256->256) + LN + ReLU + Drop
+    GCNConv(256->256) + LN + ReLU
+    GlobalMeanPool -> Linear(256->128) + ReLU + Drop -> Linear(128->10)
     """
 
-    def __init__(self, num_classes=10, hidden_dim=160, dropout=0.3):
+    def __init__(self, num_classes=10, hidden_dim=256, dropout=0.3):
         super().__init__()
 
         self.conv1 = GCNConv(8, hidden_dim)
@@ -87,6 +88,9 @@ class HandGCN(nn.Module):
 
         self.conv3 = GCNConv(hidden_dim, hidden_dim)
         self.norm3 = nn.LayerNorm(hidden_dim)
+
+        self.conv4 = GCNConv(hidden_dim, hidden_dim)
+        self.norm4 = nn.LayerNorm(hidden_dim)
 
         self.drop = nn.Dropout(dropout)
 
@@ -112,10 +116,11 @@ class HandGCN(nn.Module):
         hl = handedness[:, 1:2].unsqueeze(1).expand(B, N, 1)
         h = torch.cat([xn, hl, bone], dim=-1)
 
-        # Three GCN layers
+        # Four GCN layers
         h = self.conv1(h, adj); h = self.norm1(h); h = F.relu(h); h = self.drop(h)
         h = self.conv2(h, adj); h = self.norm2(h); h = F.relu(h); h = self.drop(h)
-        h = self.conv3(h, adj); h = self.norm3(h); h = F.relu(h)
+        h = self.conv3(h, adj); h = self.norm3(h); h = F.relu(h); h = self.drop(h)
+        h = self.conv4(h, adj); h = self.norm4(h); h = F.relu(h)
 
         # Global mean pool + classify
         return self.classifier(h.mean(dim=1))
