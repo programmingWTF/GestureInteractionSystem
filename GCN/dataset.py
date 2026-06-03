@@ -86,31 +86,37 @@ def load_all_data(data_root: str = None) -> list:
     return samples
 
 
-def get_train_val_split(samples: list, val_ratio: float = 0.2, seed: int = 42):
+def get_train_val_split(samples: list, val_ratio: float = 0.2, seed: int = 42,
+                        method: str = "stratified"):
     """
-    Chronological train/val split to prevent temporal leakage.
+    Train/validation split.
 
-    Data is recorded sequentially (adjacent frames are nearly identical).
-    Random splitting would put similar frames in both sets, inflating
-    validation accuracy. Chronological split uses the first 80% for
-    training and the last 20% for validation.
+    Args:
+        method: "stratified" — random split stratified by class + handedness
+                "chronological" — first 80% train, last 20% val (no leakage,
+                but val may drift if hand position changes during recording)
     """
-    train_samples = []
-    val_samples = []
+    from sklearn.model_selection import train_test_split
 
-    for c in range(NUM_CLASSES):
-
-        class_samples = [s for s in samples if s[2] == c]
-        if len(class_samples) == 0:
-            continue
-
-        n_val = max(1, int(len(class_samples) * val_ratio))
-        train_samples.extend(class_samples[:-n_val])
-        val_samples.extend(class_samples[-n_val:])
-
-    # Shuffle training set only
-    rng = np.random.RandomState(seed)
-    rng.shuffle(train_samples)
+    if method == "chronological":
+        train_samples, val_samples = [], []
+        for c in range(NUM_CLASSES):
+            class_samples = [s for s in samples if s[2] == c]
+            if len(class_samples) == 0:
+                continue
+            n_val = max(1, int(len(class_samples) * val_ratio))
+            train_samples.extend(class_samples[:-n_val])
+            val_samples.extend(class_samples[-n_val:])
+        rng = np.random.RandomState(seed)
+        rng.shuffle(train_samples)
+    else:
+        # Stratified by (class, handedness)
+        groups = [(s[2], s[1]) for s in samples]  # (label, hand_idx)
+        train_idx, val_idx = train_test_split(
+            range(len(samples)), test_size=val_ratio,
+            stratify=groups, random_state=seed)
+        train_samples = [samples[i] for i in train_idx]
+        val_samples = [samples[i] for i in val_idx]
 
     return HandGestureDataset(train_samples), HandGestureDataset(val_samples)
 

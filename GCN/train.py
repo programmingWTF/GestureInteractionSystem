@@ -27,11 +27,13 @@ CONFIG = {
     "epochs": 400,
     "lr": 2e-3,
     "weight_decay": 1e-5,
-    "dropout": 0.35,
+    "dropout": 0.3,
     "val_ratio": 0.2,
-    "patience": 60,
-    "warmup_epochs": 5,
+    "patience": 35,
+    "lr_patience": 25,
+    "lr_factor": 0.5,
     "label_smoothing": 0.05,
+    "split_method": "stratified",  # "stratified" or "chronological"
     "num_workers": 0,
 }
 OUTPUT_DIR = _THIS_DIR
@@ -175,7 +177,8 @@ def main():
     print_data_stats(samples)
     if len(samples) < 20:
         print("  ❌ 数据不足"); return
-    train_set, val_set = get_train_val_split(samples, CONFIG["val_ratio"])
+    train_set, val_set = get_train_val_split(samples, CONFIG["val_ratio"],
+                                             method=CONFIG["split_method"])
     print(f"\n  训练: {len(train_set)}  验证: {len(val_set)}")
     train_loader = DataLoader(train_set, CONFIG["batch_size"], shuffle=True,
                               num_workers=CONFIG["num_workers"], drop_last=True)
@@ -189,25 +192,16 @@ def main():
     criterion = nn.CrossEntropyLoss(label_smoothing=CONFIG["label_smoothing"])
     optimizer = torch.optim.AdamW(model.parameters(), lr=CONFIG["lr"],
                                   weight_decay=CONFIG["weight_decay"])
-    # Cosine annealing with linear warmup (per-step)
-    warmup_steps = CONFIG["warmup_epochs"] * len(train_loader)
-    total_steps = CONFIG["epochs"] * len(train_loader)
-
-    def lr_fn(step):
-        if step < warmup_steps:
-            return step / max(1, warmup_steps)
-        progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
-        return 0.5 * (1 + math.cos(math.pi * progress))
-
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_fn)
-    global_step = 0
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=CONFIG["lr_factor"],
+        patience=CONFIG["lr_patience"])
 
 
     print("\n" + "=" * 55 + "\n  开始训练\n" + "=" * 55)
     hdr = f"  {'Ep':>4s}  {'Train Loss':>10s}  {'Train Acc':>9s}  {'Val Loss':>8s}  {'Val Acc':>7s}  {'LR':>8s}  {'Time':>5s}"
     print(hdr + "\n  " + "─" * 62)
     history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
-    best_acc, best_ep, patience_ctr = 0.0, 0, 0
+    best_loss = float('inf'); best_ep = 0; patience_ctr = 0
     best_path = os.path.join(OUTPUT_DIR, "best_model.pth")
     t0 = time.time()
 
@@ -215,31 +209,29 @@ def main():
         t_ep = time.time()
         tl, ta = train_epoch(model, train_loader, optimizer, criterion, adj, device, ep, CONFIG["epochs"])
         vl, va, _ = validate(model, val_loader, criterion, adj, device)
-        # step-based cosine annealing
-        for _ in range(len(train_loader)):
-            global_step += 1
-            scheduler.step()
+        scheduler.step(vl)
         lr = optimizer.param_groups[0]["lr"]
 
         history["train_loss"].append(tl); history["train_acc"].append(ta)
         history["val_loss"].append(vl); history["val_acc"].append(va)
 
         print(f"  {ep:>4d}  {tl:>10.4f}  {ta:>8.2%}  {vl:>8.4f}  {va:>7.2%}  {lr:>7.1e}  {time.time()-t_ep:>4.1f}s")
-        if va > best_acc:
-            best_acc, best_ep, patience_ctr = va, ep, 0
+        if vl < best_loss:
+            best_loss = vl; best_ep = ep; patience_ctr = 0
             torch.save({"epoch": ep, "model_state_dict": model.state_dict(),
-                        "val_acc": va, "config": CONFIG}, best_path)
-            print(f"         ↑ best ({va:.2%})")
+                        "val_acc": va, "val_loss": vl, "config": CONFIG}, best_path)
+            print(f"         ↑ best loss ({vl:.4f}, acc={va:.2%})")
         else:
             patience_ctr += 1
         if patience_ctr >= CONFIG["patience"]:
-            print(f"\n  ⏹ Early stop @ {ep}")
+            print(f"\n  Early stop at epoch {ep}")
             break
 
-    total_t = time.time() - t0
-    print(f"\n  Done: {total_t:.0f}s  |  Best: {best_acc:.2%} at epoch {best_ep}")
-
     ckpt = torch.load(best_path, map_location=device, weights_only=False)
+    best_acc = ckpt.get("val_acc", 0)
+    total_t = time.time() - t0
+    print(f"\n  Done: {total_t:.0f}s  |  Best loss: {best_loss:.4f} (acc={best_acc:.2%}) at epoch {best_ep}")
+
     model.load_state_dict(ckpt["model_state_dict"])
     _, final_acc, _ = validate(model, val_loader, criterion, adj, device)
 
