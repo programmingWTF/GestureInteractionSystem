@@ -1,16 +1,16 @@
                precision    recall  f1-score   support
 
-    open_palm       0.73      0.90      0.81        89
-         fist       0.87      0.89      0.88       102
-  index_point       0.94      1.00      0.97        89
-      victory       0.88      0.81      0.84        89
-           ok       0.91      0.90      0.91        91
-    thumbs_up       0.98      0.93      0.95        90
-three_fingers       0.84      0.87      0.86        86
-        pinch       0.99      0.85      0.91        85
- four_fingers       0.87      0.76      0.81        87
-   thumb_down       0.93      0.97      0.95        89
+    open_palm       0.81      0.85      0.83       319
+         fist       0.96      0.81      0.88       319
+  index_point       0.97      0.92      0.94       319
+      victory       0.82      0.89      0.86       319
+           ok       0.98      0.92      0.95       319
+    thumbs_up       0.99      1.00      0.99       319
+three_fingers       0.87      0.72      0.79       319
+        pinch       0.92      0.98      0.95       319
+ four_fingers       0.75      0.85      0.79       319
+   thumb_down       0.90      0.98      0.94       319
 
-     accuracy                           0.89       897
-    macro avg       0.89      0.89      0.89       897
- weighted avg       0.89      0.89      0.89       897
+     accuracy                           0.89      3190
+    macro avg       0.90      0.89      0.89      3190
+ weighted avg       0.90      0.89      0.89      3190
