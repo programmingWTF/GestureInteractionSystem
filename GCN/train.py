@@ -12,6 +12,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from sklearn.metrics import confusion_matrix, classification_report
+from tqdm import tqdm
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _THIS_DIR not in sys.path:
@@ -44,10 +45,11 @@ def get_device():
     return torch.device("cpu")
 
 
-def train_epoch(model, loader, optimizer, criterion, adj, device):
+def train_epoch(model, loader, optimizer, criterion, adj, device, epoch, total_epochs):
     model.train()
     total_loss, correct, total = 0.0, 0, 0
-    for landmarks, hand_vec, labels in loader:
+    pbar = tqdm(loader, desc=f"Train {epoch}/{total_epochs}", unit="batch", leave=False)
+    for landmarks, hand_vec, labels in pbar:
         landmarks = landmarks.to(device)
         hand_vec = hand_vec.to(device)
         labels = labels.to(device)
@@ -56,9 +58,10 @@ def train_epoch(model, loader, optimizer, criterion, adj, device):
         loss = criterion(logits, labels)
         loss.backward()
         optimizer.step()
+        bc = (logits.argmax(1) == labels).sum().item()
         total_loss += loss.item() * landmarks.size(0)
-        correct += (logits.argmax(1) == labels).sum().item()
-        total += labels.size(0)
+        correct += bc; total += labels.size(0)
+        pbar.set_postfix(loss=f"{loss.item():.3f}", acc=f"{bc/landmarks.size(0):.1%}")
     return total_loss / total, correct / total
 
 
@@ -67,7 +70,8 @@ def validate(model, loader, criterion, adj, device):
     model.eval()
     total_loss, correct, total = 0.0, 0, 0
     all_preds, all_labels = [], []
-    for landmarks, hand_vec, labels in loader:
+    pbar = tqdm(loader, desc="Validate", unit="batch", leave=False)
+    for landmarks, hand_vec, labels in pbar:
         landmarks = landmarks.to(device)
         hand_vec = hand_vec.to(device)
         labels = labels.to(device)
@@ -99,12 +103,31 @@ def plot_curves(history, path):
         axes[1].legend(); axes[1].grid(True, alpha=0.3)
         best = int(np.argmax(history["val_acc"]))
         ba = history["val_acc"][best]
-        axes[1].annotate(f"Best: {ba*100:.1f}% @ ep{best+1}",
-                         xy=(best, ba), xytext=(best+8, ba-0.06),
+        axes[1].annotate(f"Best: {ba*100:.1f}% @ epoch {best+1}",
+                         xy=(best, ba), xytext=(best + 3, ba - 0.08),
                          arrowprops=dict(arrowstyle="->", color="green"),
                          fontsize=10, color="green")
-        plt.tight_layout(); plt.savefig(path, dpi=120, bbox_inches="tight"); plt.close()
-        print(f"  📈 {path}")
+        plt.tight_layout(); plt.savefig(path, dpi=150); plt.close()
+    except ImportError:
+        pass
+
+
+def plot_confusion(cm, path, class_names):
+    try:
+        import matplotlib; matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        fig, ax = plt.subplots(figsize=(9, 8))
+        im = ax.imshow(cm, cmap="Blues")
+        ax.set_xticks(range(len(class_names))); ax.set_yticks(range(len(class_names)))
+        ax.set_xticklabels(class_names, rotation=45, ha="right", fontsize=8)
+        ax.set_yticklabels(class_names, fontsize=8)
+        ax.set_xlabel("Predicted"); ax.set_ylabel("True")
+        for i in range(len(class_names)):
+            for j in range(len(class_names)):
+                ax.text(j, i, cm[i, j], ha="center", va="center",
+                        fontsize=7, color="white" if cm[i, j] > cm.max()/2 else "black")
+        plt.colorbar(im, ax=ax)
+        plt.tight_layout(); plt.savefig(path, dpi=150); plt.close()
     except ImportError:
         pass
 
@@ -158,7 +181,7 @@ def main():
 
     for ep in range(1, CONFIG["epochs"] + 1):
         t_ep = time.time()
-        tl, ta = train_epoch(model, train_loader, optimizer, criterion, adj, device)
+        tl, ta = train_epoch(model, train_loader, optimizer, criterion, adj, device, ep, CONFIG["epochs"])
         vl, va, _ = validate(model, val_loader, criterion, adj, device)
         # step-based cosine annealing
         for _ in range(len(train_loader)):
@@ -181,8 +204,8 @@ def main():
             print(f"\n  ⏹ Early stop @ {ep}")
             break
 
-    print(f"\n  ✅ 完成: {time.time()-t0:.0f}s | 最佳: {best_acc:.2%} @ ep{best_ep}")
-    plot_curves(history, os.path.join(OUTPUT_DIR, "training_curves.png"))
+    total_t = time.time() - t0
+    print(f"\n  Done: {total_t:.0f}s  |  Best: {best_acc:.2%} at epoch {best_ep}")
 
     ckpt = torch.load(best_path, map_location=device, weights_only=False)
     model.load_state_dict(ckpt["model_state_dict"])
@@ -195,11 +218,40 @@ def main():
             all_preds.extend(logits.argmax(1).cpu().tolist())
             all_labels.extend(labels.tolist())
 
-    print(f"\n  最终准确率: {final_acc:.2%}")
-    if len(set(all_labels)) > 1:
-        print("\n  分类报告:")
-        print(classification_report(all_labels, all_preds,
-              target_names=[g[2] for g in GESTURES], zero_division=0))
+    cm = confusion_matrix(all_labels, all_preds)
+    gesture_names = [g[1] for g in GESTURES]  # English: open_palm, fist, ...
+    n_params = sum(p.numel() for p in model.parameters())
+
+    # Paper-ready outputs
+    plot_curves(history, os.path.join(OUTPUT_DIR, "training_curves.png"))
+    plot_confusion(cm, os.path.join(OUTPUT_DIR, "confusion_matrix.png"), gesture_names)
+
+    en_names = [g[1] for g in GESTURES]
+    report = classification_report(all_labels, all_preds,
+                                   target_names=en_names, zero_division=0)
+    with open(os.path.join(OUTPUT_DIR, "classification_report.txt"), "w") as f:
+        f.write(report)
+
+    import json
+    info = {
+        "model": "HandGCN",
+        "parameters": n_params,
+        "input_features": "8 per node (xyz+hand+bone*4)",
+        "hidden_dim": 160,
+        "layers": 3,
+        "training_time_s": round(total_t, 1),
+        "best_val_acc": round(best_acc, 4),
+        "best_epoch": best_ep,
+        "epochs_trained": ep,
+        "classification_report": report,
+        "history": history,
+        "config": {k: v for k, v in CONFIG.items() if not callable(v)},
+    }
+    with open(os.path.join(OUTPUT_DIR, "training_log.json"), "w") as f:
+        json.dump(info, f, indent=2, ensure_ascii=False)
+
+    print(f"\n  Final accuracy: {final_acc:.2%}")
+    print(f"  Outputs saved to: {OUTPUT_DIR}")
 
 
 if __name__ == "__main__":

@@ -35,7 +35,7 @@ if _GCN_AVAILABLE:
 
 # CNN model (loaded once at startup)
 sys.path.insert(0, os.path.join(_MODULE_DIR, "CNN"))
-from predict_api import EnhancedCNN, preprocess as cnn_preprocess
+from train import DigitCNN
 CNN_MODEL_PATH = os.path.join(_MODULE_DIR, "CNN", "qmnist_digit_model.pth")
 cnn_model = None   # set in main()
 
@@ -92,7 +92,7 @@ def predict_cnn(strokes, frame_w, frame_h):
     x2, y2 = x1 + s, y1 + s
 
     size = 280
-    from PIL import Image, ImageDraw
+    from PIL import Image, ImageDraw, ImageOps
     img = Image.new("L", (size, size), 255)
     draw = ImageDraw.Draw(img)
     for stroke in strokes:
@@ -108,13 +108,20 @@ def predict_cnn(strokes, frame_w, frame_h):
     # preview as BGR numpy for display
     preview = cv2.cvtColor(np.array(img.convert("RGB")), cv2.COLOR_RGB2BGR)
 
-    # CNN inference (model loaded once at startup)
+    # CNN inference — preprocessing matches training val_transform
     if cnn_model is None:
         return None, preview, []
 
     try:
-        device = next(cnn_model.parameters()).device
-        x = cnn_preprocess(tmp).to(device)
+        pil_img = Image.open(tmp).convert("L")
+        pil_img = ImageOps.invert(pil_img)
+        pil_img = pil_img.resize((32, 32), Image.LANCZOS)
+
+        arr = np.array(pil_img, dtype=np.float32) / 255.0
+        arr = np.stack([arr, arr, arr], axis=0)
+        arr = (arr - 0.5) / 0.5
+        x = torch.from_numpy(arr).unsqueeze(0).to(next(cnn_model.parameters()).device)
+
         with torch.no_grad():
             logits = cnn_model(x)
             probs = torch.softmax(logits, dim=1).squeeze(0).cpu().numpy()
@@ -256,11 +263,33 @@ def draw_hud(frame, mode, left_g, left_gc, right_g, right_gc, pen, strokes,
         px, py = 10, h - 180
         frame[py:py+ph, px:px+pw] = pv
         cv2.rectangle(frame, (px, py), (px+pw, py+ph), (255, 220, 0), 1)
-    if cnn_top3:
-        for i, (dgt, prob) in enumerate(cnn_top3):
-            c = (0, 255, 0) if i == 0 else (200, 200, 200)
-            cv2.putText(frame, f"{dgt}:{prob:.1%}", (px + 150, py + 20 + i * 22),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, c, 1)
+    # CNN result overlay (centered, prominent)
+    if result_label:
+        ov = frame.copy()
+        # semi-transparent dark bar across center
+        bar_h = 80
+        cy = h // 2
+        cv2.rectangle(ov, (0, cy - bar_h // 2), (w, cy + bar_h // 2), (0, 0, 0), -1)
+        frame[:] = cv2.addWeighted(frame, 0.55, ov, 0.45, 0)
+        # recognized digit — large
+        txt = f"CNN: {result_label}"
+        tsz = cv2.getTextSize(txt, cv2.FONT_HERSHEY_DUPLEX, 1.8, 3)[0]
+        cv2.putText(frame, txt, ((w - tsz[0]) // 2, cy + 10),
+                    cv2.FONT_HERSHEY_DUPLEX, 1.8, (255, 220, 0), 3)
+        # top-3 below
+        if cnn_top3:
+            top_txt = "  |  ".join(f"{d}:{p:.0%}" for d, p in cnn_top3[:3])
+            tsz2 = cv2.getTextSize(top_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)[0]
+            cv2.putText(frame, top_txt, ((w - tsz2[0]) // 2, cy + 32),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
+
+    # CNN preview (bottom-left)
+    if preview_img is not None:
+        pv = cv2.resize(preview_img, (140, 140))
+        ph, pw = pv.shape[:2]
+        px, py = 10, h - 180
+        frame[py:py+ph, px:px+pw] = pv
+        cv2.rectangle(frame, (px, py), (px+pw, py+ph), (255, 220, 0), 1)
 
 
 def main():
@@ -291,7 +320,7 @@ def main():
     if os.path.exists(CNN_MODEL_PATH):
         try:
             cnn_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            cnn_model = EnhancedCNN()
+            cnn_model = DigitCNN()
             cnn_model.load_state_dict(torch.load(CNN_MODEL_PATH, map_location="cpu"))
             cnn_model.to(cnn_device)
             cnn_model.eval()
