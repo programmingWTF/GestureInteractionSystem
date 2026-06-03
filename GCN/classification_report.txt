@@ -1,16 +1,16 @@
-              precision    recall  f1-score   support
+               precision    recall  f1-score   support
 
-        手掌张开       0.76      0.87      0.81        89
-          拳头       0.88      0.75      0.81        89
-        食指指出       0.92      0.98      0.95        89
-         胜利V       0.85      0.83      0.84        89
-          OK       0.94      0.90      0.92        91
-          点赞       0.90      0.93      0.92        90
-          三指       0.84      0.86      0.85        86
-          捏合       0.91      0.87      0.89        85
-          四指       0.82      0.77      0.79        87
-        拇指向下       0.93      0.98      0.95        89
+    open_palm       0.73      0.90      0.81        89
+         fist       0.87      0.89      0.88       102
+  index_point       0.94      1.00      0.97        89
+      victory       0.88      0.81      0.84        89
+           ok       0.91      0.90      0.91        91
+    thumbs_up       0.98      0.93      0.95        90
+three_fingers       0.84      0.87      0.86        86
+        pinch       0.99      0.85      0.91        85
+ four_fingers       0.87      0.76      0.81        87
+   thumb_down       0.93      0.97      0.95        89
 
-    accuracy                           0.87       884
-   macro avg       0.88      0.87      0.87       884
-weighted avg       0.88      0.87      0.87       884
+     accuracy                           0.89       897
+    macro avg       0.89      0.89      0.89       897
+ weighted avg       0.89      0.89      0.89       897
