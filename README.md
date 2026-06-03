@@ -44,7 +44,7 @@ GestureInteractionSystem/
 │   ├── confusion_matrix.png     # 混淆矩阵热力图
 │   ├── classification_report.txt
 │   ├── training_log.json        # 完整训练指标
-│   ├── DateSet/                 # 采集的训练数据（每类一个 CSV）
+│   ├── DataSet/                 # 采集的训练数据（每类一个 CSV）
 │   └── README.md
 │
 ├── data/QMNIST/                 # QMNIST 数据集（自动下载）

@@ -1,5 +1,5 @@
 """
-PyTorch Dataset: loads CSV files from GCN/DateSet/ into (landmarks, handedness, label) tuples.
+PyTorch Dataset: loads CSV files from GCN/DataSet/ into (landmarks, handedness, label) tuples.
 """
 
 import os
@@ -13,7 +13,7 @@ from dataset_metadata import (
     GESTURES, NUM_CLASSES, NUM_LANDMARKS,
 )
 
-DATA_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "DateSet")
+DATA_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "DataSet")
 
 
 class HandGestureDataset(Dataset):
@@ -48,7 +48,7 @@ class HandGestureDataset(Dataset):
 
 def load_all_data(data_root: str = None) -> list:
     """
-    Load all CSV data from DateSet/. Returns list of (landmarks, handedness_idx, label).
+    Load all CSV data from DataSet/. Returns list of (landmarks, handedness_idx, label).
     """
     if data_root is None:
         data_root = DATA_ROOT

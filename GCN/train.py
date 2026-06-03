@@ -92,6 +92,7 @@ def plot_curves(history, path):
     try:
         import matplotlib; matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+        plt.rcParams['font.sans-serif'] = ['SimHei']
         fig, axes = plt.subplots(1, 2, figsize=(14, 5))
         axes[0].plot(history["train_loss"], label="Train", color="#2196F3")
         axes[0].plot(history["val_loss"], label="Val", color="#FF5722")
@@ -116,6 +117,7 @@ def plot_confusion(cm, path, class_names):
     try:
         import matplotlib; matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+        plt.rcParams['font.sans-serif'] = ['SimHei']
         fig, ax = plt.subplots(figsize=(9, 8))
         im = ax.imshow(cm, cmap="Blues")
         ax.set_xticks(range(len(class_names))); ax.set_yticks(range(len(class_names)))

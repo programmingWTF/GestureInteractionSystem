@@ -6,7 +6,7 @@
 GCN/
 ├── collect_data.py       # 数据采集主程序
 ├── dataset_metadata.py   # 手势元数据（类别名、关键点、骨架边）
-├── DateSet/              # 采集的 CSV 数据
+├── DataSet/              # 采集的 CSV 数据
 │   ├── open_palm/
 │   │   └── open_palm.csv
 │   ├── fist/
