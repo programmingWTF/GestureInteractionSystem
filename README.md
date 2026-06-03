@@ -106,9 +106,9 @@ python main.py
 | 架构     | Conv1(3→32)→Pool→Conv2(32→64)→Pool→Conv3(64→128)→Pool→FC(2048→256)→FC(256→10) |
 | 参数量   | ~621,000                                                                      |
 | 数据集   | QMNIST（60K 训练，60K 测试）                                                  |
-| 数据增强 | RandomAffine(±10°,±12%,85-115%) + RandomPerspective(0.25) + GaussianBlur      |
+| 数据增强 | RandomAffine(±10°,±12%,85-115%)                                           |
 
-训练时使用的增强模拟了空中手写的形变特征（透视畸变、笔画粗细变化），验证集不做增强。
+训练时使用轻量仿射增强，验证集不做增强。
 
 ## 手势类别
 
