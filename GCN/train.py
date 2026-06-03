@@ -136,10 +136,10 @@ def plot_curves(history, path):
         axes[1].legend(); axes[1].grid(True, alpha=0.3)
         best = int(np.argmax(history["val_acc"]))
         ba = history["val_acc"][best]
-        axes[1].annotate(f"Best: {ba*100:.1f}% @ epoch {best+1}",
+        axes[1].annotate(f"Best acc: {ba:.1%} @ epoch {best+1}",
                          xy=(best, ba), xytext=(best + 3, ba - 0.08),
                          arrowprops=dict(arrowstyle="->", color="green"),
-                         fontsize=10, color="green")
+                         fontsize=9, color="green")
         plt.tight_layout(); plt.savefig(path, dpi=150); plt.close()
     except ImportError:
         pass
@@ -201,7 +201,7 @@ def main():
     hdr = f"  {'Ep':>4s}  {'Train Loss':>10s}  {'Train Acc':>9s}  {'Val Loss':>8s}  {'Val Acc':>7s}  {'LR':>8s}  {'Time':>5s}"
     print(hdr + "\n  " + "─" * 62)
     history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
-    best_loss = float('inf'); best_ep = 0; patience_ctr = 0
+    best_acc = 0.0; best_ep = 0; patience_ctr = 0
     best_path = os.path.join(OUTPUT_DIR, "best_model.pth")
     t0 = time.time()
 
@@ -216,22 +216,21 @@ def main():
         history["val_loss"].append(vl); history["val_acc"].append(va)
 
         print(f"  {ep:>4d}  {tl:>10.4f}  {ta:>8.2%}  {vl:>8.4f}  {va:>7.2%}  {lr:>7.1e}  {time.time()-t_ep:>4.1f}s")
-        if vl < best_loss:
-            best_loss = vl; best_ep = ep; patience_ctr = 0
+        if va > best_acc:
+            best_acc = va; best_ep = ep; patience_ctr = 0
             torch.save({"epoch": ep, "model_state_dict": model.state_dict(),
                         "val_acc": va, "val_loss": vl, "config": CONFIG}, best_path)
-            print(f"         ↑ best loss ({vl:.4f}, acc={va:.2%})")
+            print(f"         ↑ best acc ({va:.2%})")
         else:
             patience_ctr += 1
         if patience_ctr >= CONFIG["patience"]:
             print(f"\n  Early stop at epoch {ep}")
             break
 
-    ckpt = torch.load(best_path, map_location=device, weights_only=False)
-    best_acc = ckpt.get("val_acc", 0)
     total_t = time.time() - t0
-    print(f"\n  Done: {total_t:.0f}s  |  Best loss: {best_loss:.4f} (acc={best_acc:.2%}) at epoch {best_ep}")
+    print(f"\n  Done: {total_t:.0f}s  |  Best acc: {best_acc:.2%} at epoch {best_ep}")
 
+    ckpt = torch.load(best_path, map_location=device, weights_only=False)
     model.load_state_dict(ckpt["model_state_dict"])
     _, final_acc, _ = validate(model, val_loader, criterion, adj, device)
 

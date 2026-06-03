@@ -143,11 +143,15 @@ def plot_curves(history, path):
         axes[1].plot(history["val_acc"], label="Val")
         axes[1].set_xlabel("Epoch"); axes[1].set_ylabel("Accuracy")
         axes[1].legend(); axes[1].grid(True, alpha=0.3)
-        best = int(np.argmax(history["val_acc"]))
+        best = int(np.argmin(history["val_loss"]))
+        bl = history["val_loss"][best]
         ba = history["val_acc"][best]
-        axes[1].annotate(f"Best: {ba*100:.1f}% @ epoch {best+1}",
+        axes[0].annotate(f"Best loss: {bl:.4f} @ epoch {best+1}",
+                         xy=(best, bl), xytext=(best + 3, bl + 0.05),
+                         arrowprops=dict(arrowstyle="->", color="green"), fontsize=9, color="green")
+        axes[1].annotate(f"Acc at best loss: {ba:.1%}",
                          xy=(best, ba), xytext=(best + 3, ba - 0.08),
-                         arrowprops=dict(arrowstyle="->", color="green"), fontsize=10, color="green")
+                         arrowprops=dict(arrowstyle="->", color="green"), fontsize=9, color="green")
         plt.tight_layout(); plt.savefig(path, dpi=150); plt.close()
     except ImportError: pass
 
@@ -198,7 +202,7 @@ def main():
     print("\n" + hdr + "\n  " + "-" * 60)
 
     history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
-    best_acc, best_epoch, patience_ctr = 0.0, 0, 0
+    best_loss = float('inf'); best_epoch = 0; patience_ctr = 0
     best_path = os.path.join(OUTPUT_DIR, "qmnist_digit_model.pth")
     t_start = time.time()
 
@@ -215,17 +219,17 @@ def main():
               f"  {va:>7.2%}  {optimizer.param_groups[0]['lr']:>7.1e}"
               f"  {time.time()-t_ep:>4.1f}s")
 
-        if va > best_acc:
-            best_acc, best_epoch, patience_ctr = va, ep, 0
+        if vl < best_loss:
+            best_loss = vl; best_epoch = ep; patience_ctr = 0
             torch.save(model.state_dict(), best_path)
-            print(f"         best ({va:.2%})")
+            print(f"         best loss ({vl:.4f}, acc={va:.2%})")
         else:
             patience_ctr += 1
         if patience_ctr >= CONFIG["patience"]:
             print(f"\n  Early stop at epoch {ep}"); break
 
     total_t = time.time() - t_start
-    print(f"\n  Done: {total_t:.0f}s  |  Best: {best_acc:.2%} at epoch {best_epoch}")
+    print(f"\n  Done: {total_t:.0f}s  |  Best loss: {best_loss:.4f} at epoch {best_epoch}")
 
     model.load_state_dict(torch.load(best_path, map_location=device))
     _, final_acc, preds, labels = validate(model, val_loader, criterion, device)
@@ -246,7 +250,8 @@ def main():
         "augmentation": "RandomAffine(deg=10, translate=12%, scale=85-115%), NO flip",
         "dataset": "QMNIST (60K train, 10K test)",
         "training_time_s": round(total_t, 1),
-        "best_val_acc": round(best_acc, 4),
+        "best_val_loss": round(best_loss, 4),
+        "best_val_acc": round(final_acc, 4),
         "best_epoch": best_epoch,
         "epochs_trained": ep,
         "classification_report": report,

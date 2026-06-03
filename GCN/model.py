@@ -1,6 +1,6 @@
 """
-Hand gesture GCN with bone features, joint angles, residual connections, and JK-Net.
-4-layer ResGCN + multi-scale concatenation + MLP classifier.
+Hand gesture GCN with bone features, joint angles, and residual connections.
+3-layer ResGCN + MLP classifier. ~120K parameters.
 """
 
 import math
@@ -110,30 +110,16 @@ class ResGCNBlock(nn.Module):
         return x + self.drop(F.relu(self.conv(self.norm(x), adj)))
 
 
-class ResGCNProj(nn.Module):
-    """Residual GCN with projection for dimension change"""
-
-    def __init__(self, in_ch, out_ch, dropout):
-        super().__init__()
-        self.norm = nn.LayerNorm(in_ch)
-        self.conv = GCNConv(in_ch, out_ch)
-        self.proj = nn.Linear(in_ch, out_ch, bias=False) if in_ch != out_ch else nn.Identity()
-        self.drop = nn.Dropout(dropout)
-
-    def forward(self, x, adj):
-        return self.proj(x) + self.drop(F.relu(self.conv(self.norm(x), adj)))
-
-
 class HandGCN(nn.Module):
-    """4-layer ResGCN + JK-Net + joint angles.
+    """3-layer ResGCN with bone features and joint angles.
 
-    Input  (B,21,13)  xyz_norm(3) + hand(1) + bone(4) + angles(1) + bone_dir at node(4)
-    ResGCN(13->256) → ResGCN(256) → ResGCN(256) → ResGCN(256)
-    JK-Net: concat all 4 layer outputs → project to 256
-    GlobalMeanPool → Linear(256→128) + Drop → Linear(128→10)
+    Input  (B,21,9)  xyz_norm + hand + bone*4 + angle
+    GCN(9→160) + LN + ReLU + Drop
+    ResGCN(160) → ResGCN(160) → ResGCN(160)
+    GlobalMeanPool → Linear(160→80) + Drop → Linear(80→10)
     """
 
-    def __init__(self, num_classes=10, hidden_dim=192, dropout=0.3):
+    def __init__(self, num_classes=10, hidden_dim=160, dropout=0.3):
         super().__init__()
         in_ch = 3 + 1 + 4 + 1  # xyz + hand + bone*4 + angle = 9
         self.input_proj = GCNConv(in_ch, hidden_dim)
@@ -142,10 +128,6 @@ class HandGCN(nn.Module):
         self.block1 = ResGCNBlock(hidden_dim, dropout)
         self.block2 = ResGCNBlock(hidden_dim, dropout)
         self.block3 = ResGCNBlock(hidden_dim, dropout)
-
-        # JK-Net: concat 4 stages → project
-        jk_dim = hidden_dim * 4
-        self.jk_proj = nn.Linear(jk_dim, hidden_dim)
 
         self.drop = nn.Dropout(dropout)
 
@@ -169,20 +151,14 @@ class HandGCN(nn.Module):
                torch.zeros(B, N, 4, device=x.device)
         angles = compute_joint_angles(xn)
         hl = handedness[:, 1:2].unsqueeze(1).expand(B, N, 1)
-        h = torch.cat([xn, hl, bone, angles], dim=-1)      # (B, N, 9)
+        h = torch.cat([xn, hl, bone, angles], dim=-1)
 
-        # Input projection
-        h0 = F.relu(self.input_norm(self.input_proj(h, adj)))
-        h0 = self.drop(h0)                                  # stage 0
+        h = F.relu(self.input_norm(self.input_proj(h, adj)))
+        h = self.drop(h)
 
-        # Residual blocks
-        h1 = self.block1(h0, adj)                           # stage 1
-        h2 = self.block2(h1, adj)                           # stage 2
-        h3 = self.block3(h2, adj)                           # stage 3
-
-        # JK-Net: concat all stages
-        h = torch.cat([h0, h1, h2, h3], dim=-1)            # (B, N, 4*hidden)
-        h = F.relu(self.jk_proj(h))                         # (B, N, hidden)
+        h = self.block1(h, adj)
+        h = self.block2(h, adj)
+        h = self.block3(h, adj)
 
         return self.classifier(h.mean(dim=1))
 
