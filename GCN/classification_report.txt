@@ -1,14 +1,14 @@
                precision    recall  f1-score   support
 
-    open_palm       0.93      0.97      0.95       319
+    open_palm       0.93      0.95      0.94       319
          fist       0.97      0.96      0.96       320
-  index_point       0.97      0.99      0.98       320
-      victory       0.97      0.95      0.96       320
+  index_point       0.98      0.99      0.98       320
+      victory       0.96      0.97      0.97       320
            ok       0.99      0.98      0.99       320
-    thumbs_up       0.99      0.97      0.98       319
-three_fingers       0.95      0.93      0.94       320
-        pinch       0.96      0.99      0.97       320
- four_fingers       0.95      0.93      0.94       320
+    thumbs_up       0.99      0.98      0.99       319
+three_fingers       0.95      0.94      0.94       320
+        pinch       0.96      0.98      0.97       320
+ four_fingers       0.95      0.94      0.95       320
    thumb_down       1.00      0.97      0.98       320
 
      accuracy                           0.97      3198
