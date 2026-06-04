@@ -298,8 +298,8 @@ def main():
     print("=" * 50)
 
     cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 960)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 540)
     if not cap.isOpened():
         print("ERROR: camera"); return
     fw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -349,6 +349,7 @@ def main():
     # 1 Euro filters: separate state per hand
     filter_L = [OneEuroFilter() for _ in range(63)]
     filter_R = [OneEuroFilter() for _ in range(63)]
+    seen_L = False; seen_R = False  # track hand presence for filter reset
 
     cv2.namedWindow("Gesture v3", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("Gesture v3", 1280, 720)
@@ -373,6 +374,7 @@ def main():
         left_lms = None; right_lms = None
         left_g = None; right_g = None
         left_gc = 0; right_gc = 0
+        now_L = False; now_R = False
 
         if res.hand_landmarks:
             for i, hlms in enumerate(res.hand_landmarks):
@@ -381,8 +383,13 @@ def main():
                     hnd = res.handedness[i][0].category_name
                 actual = "Left" if hnd == "Right" else "Right"
 
-                # 1 Euro filter (per-hand)
+                # Reset filter on hand re-appearance (prevents edge-hand ghosting)
+                if actual == "Left": now_L = True
+                else: now_R = True
                 flt = filter_L if actual == "Left" else filter_R
+                was_seen = seen_L if actual == "Left" else seen_R
+                if not was_seen:
+                    for f in flt: f.reset()
                 smooth_landmarks(flt, hlms, time.time())
 
                 col = (220, 100, 50) if actual == "Left" else (80, 220, 60)
@@ -443,6 +450,8 @@ def main():
             for i in range(len(cur) - 1):
                 cv2.line(cv2_canvas, cur[i], cur[i+1], (0, 255, 255), 3, cv2.LINE_AA)
         frame = cv2.addWeighted(frame, 0.7, cv2_canvas, 0.4, 0)
+
+        seen_L = now_L; seen_R = now_R
 
         # FPS
         now = time.time()

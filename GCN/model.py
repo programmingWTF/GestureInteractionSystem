@@ -81,19 +81,17 @@ _ANGLE_PAIRS = [
 
 
 def compute_joint_angles(x):
-    """Compute cosine of joint flexion angles at 11 key joints.
-    Returns (B, N, 1) with angle features at relevant nodes, zero elsewhere."""
+    """Compute cosine of joint flexion angles at 11 key joints (vectorized)."""
     B, N, _ = x.shape; dev = x.device
+    a = torch.tensor([p[0] for p in _ANGLE_PAIRS], device=dev, dtype=torch.long)
+    b = torch.tensor([p[1] for p in _ANGLE_PAIRS], device=dev, dtype=torch.long)
+    c = torch.tensor([p[2] for p in _ANGLE_PAIRS], device=dev, dtype=torch.long)
+    K = len(_ANGLE_PAIRS)
+    u = x[:, b] - x[:, a]; u = u / (u.norm(dim=-1, keepdim=True) + 1e-8)
+    v = x[:, c] - x[:, b]; v = v / (v.norm(dim=-1, keepdim=True) + 1e-8)
+    cos_all = (u * v).sum(dim=-1, keepdim=True)  # (B, K, 1)
     angles = torch.zeros(B, N, 1, device=dev)
-
-    for a, b, c in _ANGLE_PAIRS:
-        u = x[:, b:b+1] - x[:, a:a+1]  # (B, 1, 3)
-        v = x[:, c:c+1] - x[:, b:b+1]  # (B, 1, 3)
-        u_norm = u / (u.norm(dim=-1, keepdim=True) + 1e-8)
-        v_norm = v / (v.norm(dim=-1, keepdim=True) + 1e-8)
-        cos_theta = (u_norm * v_norm).sum(dim=-1, keepdim=True)  # (B, 1, 1)
-        angles[:, b:b+1] = cos_theta
-
+    angles.scatter_(1, b.view(1, K, 1).expand(B, K, 1), cos_all)
     return angles
 
 
